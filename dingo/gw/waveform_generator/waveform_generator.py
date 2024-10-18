@@ -76,11 +76,13 @@ class WaveformGenerator:
         else:
             self.approximant_str = approximant
             self.lal_params = None
+            self.mode_list = None
             if "SEOBNRv5" not in approximant:
                 # This LAL function does not work with waveforms using the new interface. TODO: Improve the check.
                 self.approximant = LS.GetApproximantFromString(approximant)
                 if mode_list is not None:
-                    self.lal_params = self.setup_mode_array(mode_list)
+                    self.mode_list = mode_list
+                    
 
         if not issubclass(type(domain), Domain):
             raise ValueError(
@@ -172,7 +174,7 @@ class WaveformGenerator:
         parameters = parameters.copy()
         parameters["f_ref"] = self.f_ref
 
-        parameters_generator = self._convert_parameters(parameters, self.lal_params)
+        parameters_generator = self._convert_parameters(parameters, self.mode_list)
 
         # Generate GW polarizations
         if isinstance(self.domain, FrequencyDomain):
@@ -230,7 +232,7 @@ class WaveformGenerator:
     def _convert_parameters(
         self,
         parameter_dict: Dict,
-        lal_params=None,
+        mode_list=None,
         lal_target_function=None,
     ) -> Tuple:
         """Convert to lal source frame parameters
@@ -274,7 +276,8 @@ class WaveformGenerator:
             raise ValueError(
                 f"Unsupported lalsimulation waveform function {lal_target_function}."
             )
-
+        if mode_list is not None:
+            lal_params = self.setup_mode_array(self.mode_list)
         # Transform mass, spin, and distance parameters
         p, _ = convert_to_lal_binary_black_hole_parameters(parameter_dict)
 
