@@ -278,6 +278,8 @@ class WaveformGenerator:
             )
         if mode_list is not None:
             lal_params = self.setup_mode_array(self.mode_list)
+        else:
+            lal_params = None
         # Transform mass, spin, and distance parameters
         p, _ = convert_to_lal_binary_black_hole_parameters(parameter_dict)
 
