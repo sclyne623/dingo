@@ -719,7 +719,7 @@ class WaveformGenerator:
         """
         # TD approximants that are implemented in L0 frame. Currently tested for:
         #   52: SEOBNRv4PHM
-        if self.approximant in [52]:
+        if self.approximant in [52,95]:
             parameters_lal_td_modes, iota = self._convert_parameters(
                 {**parameters, "f_ref": self.f_ref},
                 lal_target_function="SimInspiralChooseTDModes",
@@ -728,7 +728,7 @@ class WaveformGenerator:
             return wfg_utils.linked_list_modes_to_dict_modes(hlm_td), iota
         else:
             raise NotImplementedError(
-                f"Approximant {LS.GetApproximantFromString(self.approximant)} not "
+                f"Approximant {self.approximant_str} not "
                 f"implemented. When adding this approximant to this method, make sure "
                 f"the the output dict hlm_td contains the TD modes in the *L0 frame*. "
                 f"In particular, adding an approximant that is implemented in the same "
