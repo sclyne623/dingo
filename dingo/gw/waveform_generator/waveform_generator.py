@@ -833,7 +833,7 @@ class WaveformGenerator:
                     )
 
                     (
-                        new_fmin,
+                        new_f_min,
                         f_start,
                         extra_time_fraction,
                         t_chirp,
