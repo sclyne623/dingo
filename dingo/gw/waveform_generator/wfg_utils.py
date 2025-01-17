@@ -260,7 +260,7 @@ def correct_for_eob_lal_frame_rotation(h_plus, h_cross):
     h_cross = cp*h_cross - sp*h_plus
     return (h_plus, h_cross)
 
-def taper_aligned_spin(h, m1, m2, extra_time_fraction, t_chirp, t_extra, f_min):
+def taper_aligned_spin(h, m1, m2, extra_time_fraction, t_chirp, t_extra, original_fmin,f_min):
     # condition the time domain waveform by tapering in the extra time
     # at the beginning and high-pass filtering above original f_min
     
@@ -273,7 +273,7 @@ def taper_aligned_spin(h, m1, m2, extra_time_fraction, t_chirp, t_extra, f_min):
         h_imag = lal.CreateREAL8TimeSeries("h_imag", h.epoch, h.f0, h.deltaT, h.sampleUnits, h.data.length)
         h_imag.data.data = -np.imag(h.data.data)
 
-    LS.SimInspiralTDConditionStage1(h_real, h_imag, extra_time_fraction * t_chirp + t_extra, f_min)
+    LS.SimInspiralTDConditionStage1(h_real, h_imag, extra_time_fraction * t_chirp + t_extra, original_f_min)
 
     # final tapering at the beginning and at the end to remove filter transients
 
@@ -315,7 +315,7 @@ def get_stepped_back_f_start(f_min, m1, m2, S1z, S2z):
     # frequency f_min; here compute a new lower frequency
     f_start = LS.SimInspiralChirpStartFrequencyBound((1.0 + extra_time_fraction) * t_chirp + t_merge + t_extra, m1, m2)
     
-    return f_start, extra_time_fraction, t_chirp, t_extra
+    return f_min,f_start, extra_time_fraction, t_chirp, t_extra
 
 def taper_stepped_back_waveform_modes(hlm_td, m1, m2, extra_time_fraction, t_chirp, t_extra, f_min):
     for (l, m), hlm in hlm_td.copy().items():

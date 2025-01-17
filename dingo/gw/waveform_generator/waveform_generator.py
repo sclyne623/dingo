@@ -758,7 +758,12 @@ class WaveformGenerator:
                 assert LS.SimInspiralImplementedTDApproximants(self.approximant)
                 # Step 1: generate waveform modes in L0 frame in native domain of
                 # approximant (here: TD)
-                hlm_td, iota = self.generate_TD_modes_L0(parameters)
+
+                
+
+
+
+                
 
                 # Step 2: Transform modes to target domain.
                 # This requires tapering of TD modes, and FFT to transform to FD.
@@ -768,6 +773,7 @@ class WaveformGenerator:
                     self.approximant_str == "SEOBNRv4HM"
                     or self.approximant_str == "NRsur7dq4"
                 ):
+                    hlm_td, iota = self.generate_TD_modes_L0(parameters)
                     if self.approximant_str == "SEOBNRv4HM":
                         parameters_lal, iota = self._convert_parameters_to_lal_frame(
                             {**parameters, "f_ref": self.f_ref},
@@ -793,6 +799,7 @@ class WaveformGenerator:
                         )
 
                     (
+                        new_f_min,
                         f_start,
                         extra_time_fraction,
                         t_chirp,
@@ -810,8 +817,50 @@ class WaveformGenerator:
                         t_extra,
                         self.domain.f_min,
                     )
+                #making this entirely self contained here
+                elif self.approximant_str == "NRHybSur3dq8":
+                    original_f_min = self.domain.f_min
+                    #Generate LAL parameters first to get new starting frequency
+                    parameters_lal, iota = self._convert_parameters_to_lal_frame(
+                            {**parameters, "f_ref": self.f_ref},
+                            lal_target_function="SimInspiralChooseTDModes",
+                        )
+                        m1, m2, s1z, s2z = (
+                            parameters_lal[2],
+                            parameters_lal[3],
+                            parameters_lal[6],
+                            parameters_lal[9],
+                        )
+
+                    (
+                        new_fmin,
+                        f_start,
+                        extra_time_fraction,
+                        t_chirp,
+                        t_extra,
+                    ) = wfg_utils.get_stepped_back_f_start(
+                        self.domain.f_min, m1, m2, s1z, s2z
+                    )
+                    #update the params tuple to get new starting frequency
+                    updated_params = parameters_lal_td_modes[:10] + (f_start,) + parameters_lal_td_modes[11:]
+                    hlm_td = LS.SimInspiralChooseTDModes(*updated_params)
+                    hlm_td = wfg_utils.linked_list_modes_to_dict_modes(hlm_td)
+                    wfg_utils.get_aligned_spin_negative_modes_in_place(hlm_td)
+
+                    for (l, m), hlm in hlm_td.copy().items():
+                        h_real, h_imag = taper_aligned_spin(hlm, m1, m2, extra_time_fraction, t_chirp, t_extra, original_f_min,new_f_min)
+                        strain = lal.CreateCOMPLEX16TimeSeries(f"h_{l,m}", hlm.epoch, hlm.f0, hlm.deltaT, hlm.sampleUnits, h_real.data.length)
+                        strain.data.data = h_real.data.data - 1j*h_imag.data.data
+                        hlm_td[(l, m)] = strain
+                    longest_arr_length = int(np.max([hlm.data.data.shape[0] for hlm in hlm_td.values()]))
+                    for (l, m), hlm in hlm_td.items():
+                        arr = np.pad(hlm.data.data, (0, longest_arr_length - hlm.data.data.shape[0]), 'constant', constant_values=(None, 0))
+                        hlm_td[(l, m)] = lal.CreateCOMPLEX16TimeSeries(f"h_{l,m}", hlm.epoch, hlm.f0, hlm.deltaT, hlm.sampleUnits, longest_arr_length)
+                        hlm_td[(l, m)].data.data = arr
+
 
                 else:
+                    hlm_td, iota = self.generate_TD_modes_L0(parameters)
                     wfg_utils.taper_td_modes_in_place(hlm_td)
 
                 hlm_fd = wfg_utils.td_modes_to_fd_modes(hlm_td, self.domain)
@@ -906,6 +955,7 @@ class WaveformGenerator:
         #   92: NRSur7dq2
         #   93: NRSur7dq4
         #   94: SEOBNRv4HM
+        #   95: NRHybsur3dq8
         if self.approximant in [52, 109, 92, 93, 94]:
             # Precessing Spins
             if self.approximant in [52, 92, 93]:
