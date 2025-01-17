@@ -848,7 +848,7 @@ class WaveformGenerator:
                     wfg_utils.get_aligned_spin_negative_modes_in_place(hlm_td)
 
                     for (l, m), hlm in hlm_td.copy().items():
-                        h_real, h_imag = taper_aligned_spin(hlm, m1, m2, extra_time_fraction, t_chirp, t_extra, original_f_min,new_f_min)
+                        h_real, h_imag = wfg_utils.taper_aligned_spin(hlm, m1, m2, extra_time_fraction, t_chirp, t_extra, original_f_min,new_f_min)
                         strain = lal.CreateCOMPLEX16TimeSeries(f"h_{l,m}", hlm.epoch, hlm.f0, hlm.deltaT, hlm.sampleUnits, h_real.data.length)
                         strain.data.data = h_real.data.data - 1j*h_imag.data.data
                         hlm_td[(l, m)] = strain
