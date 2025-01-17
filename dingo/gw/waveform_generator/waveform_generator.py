@@ -825,12 +825,12 @@ class WaveformGenerator:
                             {**parameters, "f_ref": self.f_ref},
                             lal_target_function="SimInspiralChooseTDModes",
                         )
-                        m1, m2, s1z, s2z = (
-                            parameters_lal[2],
-                            parameters_lal[3],
-                            parameters_lal[6],
-                            parameters_lal[9],
-                        )
+                    m1, m2, s1z, s2z = (
+                        parameters_lal[2],
+                        parameters_lal[3],
+                        parameters_lal[6],
+                        parameters_lal[9],
+                    )
 
                     (
                         new_fmin,
