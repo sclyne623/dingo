@@ -842,7 +842,7 @@ class WaveformGenerator:
                         self.domain.f_min, m1, m2, s1z, s2z
                     )
                     #update the params tuple to get new starting frequency
-                    updated_params = parameters_lal_td_modes[:10] + (f_start,) + parameters_lal_td_modes[11:]
+                    updated_params = parameters_lal[:10] + (f_start,) + parameters_lal[11:]
                     hlm_td = LS.SimInspiralChooseTDModes(*updated_params)
                     hlm_td = wfg_utils.linked_list_modes_to_dict_modes(hlm_td)
                     wfg_utils.get_aligned_spin_negative_modes_in_place(hlm_td)
