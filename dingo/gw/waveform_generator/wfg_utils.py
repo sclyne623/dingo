@@ -260,7 +260,7 @@ def correct_for_eob_lal_frame_rotation(h_plus, h_cross):
     h_cross = cp*h_cross - sp*h_plus
     return (h_plus, h_cross)
 
-def taper_aligned_spin(h, m1, m2, extra_time_fraction, t_chirp, t_extra, original_fmin,f_min):
+def taper_aligned_spin(h, m1, m2, extra_time_fraction, t_chirp, t_extra, original_f_min,f_min):
     # condition the time domain waveform by tapering in the extra time
     # at the beginning and high-pass filtering above original f_min
     
