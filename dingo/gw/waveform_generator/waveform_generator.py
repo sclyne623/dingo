@@ -76,7 +76,7 @@ class WaveformGenerator:
         else:
             self.approximant_str = approximant
             self.lal_params = None
-            if "SEOBNRv5" not in approximant:
+            if "SEOBNRv5" not in approximant and "HM" not in approximant :
                 # This LAL function does not work with waveforms using the new interface. TODO: Improve the check.
                 self.approximant = LS.GetApproximantFromString(approximant)
                 if mode_list is not None:
