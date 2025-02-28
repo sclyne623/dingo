@@ -33,6 +33,7 @@ class WaveformGenerator:
         f_ref: float,
         f_start: float = None,
         mode_list: List[Tuple] = None,
+        extrapolate = False,
         transform=None,
         spin_conversion_phase=None,
         **kwargs,
@@ -77,11 +78,15 @@ class WaveformGenerator:
             self.approximant_str = approximant
             self.lal_params = None
             self.mode_list = None
+            self.extrapolate = None
             if "SEOBNRv5" not in approximant or "SEOBNRv5_ROM" in approximant:
                 # This LAL function does not work with waveforms using the new interface. TODO: Improve the check.
                 self.approximant = LS.GetApproximantFromString(approximant)
                 if mode_list is not None:
                     self.mode_list = mode_list
+                if extrapolate:
+                    self.extrapolate = extrapolate
+                
                     
 
         if not issubclass(type(domain), Domain):
@@ -233,6 +238,7 @@ class WaveformGenerator:
         self,
         parameter_dict: Dict,
         mode_list=None,
+        extrapolate=False
         lal_target_function=None,
     ) -> Tuple:
         """Convert to lal source frame parameters
@@ -278,6 +284,15 @@ class WaveformGenerator:
             )
         if mode_list is not None:
             lal_params = self.setup_mode_array(self.mode_list)
+        elif extrapolate:
+
+            if lal_params is not None:
+                lal.DictInsertUINT4Value(lal_params, "unlimited_extrapolation", 1)
+            else:
+                lal_params = lal.CreateDict()
+                lal.DictInsertUINT4Value(lal_params, "unlimited_extrapolation", 1)
+                
+            
         else:
             lal_params = None
         # Transform mass, spin, and distance parameters
