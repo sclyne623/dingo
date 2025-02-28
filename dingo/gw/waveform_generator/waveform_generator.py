@@ -286,7 +286,7 @@ class WaveformGenerator:
             lal_params = self.setup_mode_array(self.mode_list)
         elif extrapolate:
 
-            if lal_params is not None:
+            if mode_list is not None:
                 lal.DictInsertUINT4Value(lal_params, "unlimited_extrapolation", 1)
             else:
                 lal_params = lal.CreateDict()
