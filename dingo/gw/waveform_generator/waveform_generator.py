@@ -91,7 +91,7 @@ class WaveformGenerator:
             else:
                 lal_params = lal.CreateDict()
                 lal.DictInsertUINT4Value(lal_params, "unlimited_extrapolation", 1)
-                self.lal_params = dictParams
+                self.lal_params = lal_params
             
                 
 
