@@ -33,7 +33,7 @@ class WaveformGenerator:
         f_ref: float,
         f_start: float = None,
         mode_list: List[Tuple] = None,
-        extrapolate=False
+        extrapolate=False,
         transform=None,
         spin_conversion_phase=None,
         **kwargs,
