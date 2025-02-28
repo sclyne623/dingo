@@ -238,7 +238,7 @@ class WaveformGenerator:
         self,
         parameter_dict: Dict,
         mode_list=None,
-        extrapolate=False
+        extrapolate=False,
         lal_target_function=None,
     ) -> Tuple:
         """Convert to lal source frame parameters
