@@ -179,7 +179,7 @@ class WaveformGenerator:
         parameters = parameters.copy()
         parameters["f_ref"] = self.f_ref
 
-        parameters_generator = self._convert_parameters(parameters, self.mode_list)
+        parameters_generator = self._convert_parameters(parameters, self.mode_list, self.extrapolate)
 
         # Generate GW polarizations
         if isinstance(self.domain, FrequencyDomain):
