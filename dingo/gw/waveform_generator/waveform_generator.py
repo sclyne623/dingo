@@ -33,6 +33,7 @@ class WaveformGenerator:
         f_ref: float,
         f_start: float = None,
         mode_list: List[Tuple] = None,
+        extrapolate=False
         transform=None,
         spin_conversion_phase=None,
         **kwargs,
@@ -56,6 +57,9 @@ class WaveformGenerator:
         mode_list : List[Tuple]
             A list of waveform (ell, m) modes to include when generating
             the polarizations.
+        extrapolate : Bool
+            Whether to allow extrapolation to parameter ranges outside of default approximant
+            ranges.
         spin_conversion_phase : float = None
             Value for phiRef when computing cartesian spins from bilby spins via
             bilby_to_lalsimulation_spins. The common convention is to use the value of
@@ -81,6 +85,15 @@ class WaveformGenerator:
                 self.approximant = LS.GetApproximantFromString(approximant)
                 if mode_list is not None:
                     self.lal_params = self.setup_mode_array(mode_list)
+        if extrapolate:
+            if self.lal_params is not None:
+                lal.DictInsertUINT4Value(self.lal_params, "unlimited_extrapolation", 1)
+            else:
+                lal_params = lal.CreateDict()
+                lal.DictInsertUINT4Value(lal_params, "unlimited_extrapolation", 1)
+                self.lal_params = dictParams
+            
+                
 
         if not issubclass(type(domain), Domain):
             raise ValueError(
