@@ -224,8 +224,7 @@ class FrequencyDomain(Domain):
         """
         f = self.get_sample_frequencies_astype(data)
         if isinstance(data, np.ndarray):
-            # Assume numpy arrays un-batched, since they are only used at train time.
-            phase_shift = 2 * np.pi * dt * f
+            phase_shift = 2 * np.pi * np.einsum("...,i", dt, f)
         elif isinstance(data, torch.Tensor):
             # Allow for possible multiple "batch" dimensions (e.g., batch + detector,
             # which might have independent time shifts).
@@ -293,7 +292,6 @@ class FrequencyDomain(Domain):
         New array or tensor of the same shape as data.
         """
         if isinstance(data, np.ndarray) and np.iscomplexobj(data):
-            # This case is assumed to only occur during inference, with un-batched data.
             return data * np.exp(-1j * phase)
 
         elif isinstance(data, torch.Tensor):

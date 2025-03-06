@@ -201,15 +201,48 @@ class WaveformDataset(DingoDataset, torch.utils.data.Dataset):
         """The number of waveform samples."""
         return len(self.parameters)
 
-    def __getitem__(self, idx) -> Dict[str, Dict[str, Union[float, np.ndarray]]]:
+    def __getitem__(self, idx: int) -> Dict[str, Dict[str, Union[float, np.ndarray]]]:
+        """
+        Return a nested dictionary containing parameters and waveform polarizations
+        for samples with indices `idx_batched`. If defined, a chain of transformations is applied to
+        the waveform data.
+
+        Parameters
+        ----------
+        idx : int
+            Index of the sample in the WaveformDataset to return.
+
+        Returns
+        -------
+        Dict[str, Dict[str, Union[float, np.ndarray]]]
+            Nested dictionary containing parameters and waveform polarizations.
+        """
+        return self.__getitems__([idx])[0]
+
+    def __getitems__(
+        self, batched_idx: list[int]
+    ) -> list[Dict[str, Dict[str, Union[float, np.ndarray]]]]:
         """
         Return a nested dictionary containing parameters and waveform polarizations
         for sample with index `idx`. If defined, a chain of transformations is applied to
         the waveform data.
+
+        Parameters
+        ----------
+        batched_idx : list[int]
+            List of indices to return.
+
+        Returns
+        -------
+        repackaged_data : list[Dict[str, Dict[str, Union[float, np.ndarray]]]]
+            Nested dictionary containing parameters and waveform polarizations.
         """
-        parameters = self.parameters.iloc[idx].to_dict()
+        parameters = {
+    k: v.to_numpy()
+            for k, v in self.parameters.iloc[batched_idx].items()
+        }
         polarizations = {
-            pol: waveforms[idx] for pol, waveforms in self.polarizations.items()
+            pol: waveforms[batched_idx] for pol, waveforms in self.polarizations.items()
         }
 
         # Decompression transforms are assumed to apply only to the waveform,
@@ -221,6 +254,24 @@ class WaveformDataset(DingoDataset, torch.utils.data.Dataset):
         data = {"parameters": parameters, "waveform": polarizations}
         if self.transform is not None:
             data = self.transform(data)
+
+        # The DataLoader expects a list of items from the dataset, which it will later
+        # collate. However, depending on self.transform, here data is either a nested
+        # dict of arrays or a list of arrays, each array having length batch_size.
+        # Repackage data into a list of length batch_size, each item having the same
+        # structure as before.
+
+        if isinstance(data, dict):
+            data = [
+                {k1: {k2: v2[j] for k2, v2 in v1.items()} for k1, v1 in data.items()}
+                for j in range(len(batched_idx))
+            ]
+        elif isinstance(data, list):
+            data = [
+                [data[i][j] for i in range(len(data))] for j in range(len(batched_idx))
+            ]
+        else:
+            raise NotImplementedError()
         return data
 
     def parameter_mean_std(self):
