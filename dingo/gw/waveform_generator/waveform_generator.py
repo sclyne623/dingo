@@ -737,7 +737,7 @@ class WaveformGenerator:
         #   95: NRHybSur3dq8
         if self.approximant in [52,93,95]:
             parameters_lal_td_modes, iota = self._convert_parameters(
-                {**parameters, "f_ref": self.f_ref,"mode_list":self.mode_list,"extrapolate":self.extrapolate},
+                {**parameters, "f_ref": self.f_ref},self.mode_list,self.extrapolate,
                 lal_target_function="SimInspiralChooseTDModes",
             )
             hlm_td = LS.SimInspiralChooseTDModes(*parameters_lal_td_modes)
