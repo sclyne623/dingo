@@ -1180,7 +1180,7 @@ class NewInterfaceWaveformGenerator(WaveformGenerator):
         #   52: SEOBNRv4PHM
 
         parameters_gwsignal = self._convert_parameters(
-            {**parameters, "f_ref": self.f_ref}
+            {**parameters, "f_ref": self.f_ref, "mode_list":self.mode_list,"extrapolate":self.extrapolate}
         )
 
         generator = new_interface_get_waveform_generator(self.approximant_str)
