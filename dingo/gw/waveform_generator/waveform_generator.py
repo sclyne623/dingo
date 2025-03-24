@@ -981,7 +981,7 @@ class WaveformGenerator:
             # Precessing Spins
             if self.approximant in [52, 92, 93]:
                 parameters_lal_td_modes, iota = self._convert_parameters_to_lal_frame(
-                    {**parameters, "f_ref": self.f_ref},self.mode_list,self.extrapolate
+                    {**parameters, "f_ref": self.f_ref},self.mode_list,self.extrapolate,
                     lal_target_function="SimInspiralChooseTDModes",
                 )
                 hlm_td = LS.SimInspiralChooseTDModes(*parameters_lal_td_modes)
