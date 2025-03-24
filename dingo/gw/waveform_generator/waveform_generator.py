@@ -34,6 +34,7 @@ class WaveformGenerator:
         f_ref: float,
         f_start: float = None,
         mode_list: List[Tuple] = None,
+        extrapolate = False,
         transform=None,
         spin_conversion_phase=None,
         **kwargs,
@@ -77,11 +78,16 @@ class WaveformGenerator:
         else:
             self.approximant_str = approximant
             self.lal_params = None
+            self.mode_list = None
+            self.extrapolate = None
             if "SEOBNRv5" not in approximant or "SEOBNRv5_ROM" in approximant:
                 # This LAL function does not work with waveforms using the new interface. TODO: Improve the check.
                 self.approximant = LS.GetApproximantFromString(approximant)
                 if mode_list is not None:
-                    self.lal_params = self.setup_mode_array(mode_list)
+                     self.mode_list = mode_list
+                if extrapolate:
+                    self.extrapolate = extrapolate
+                
 
         if not issubclass(type(domain), Domain):
             raise ValueError(
@@ -178,13 +184,13 @@ class WaveformGenerator:
             wf_generator = self.generate_FD_waveform
             # Convert to lalsimulation parameters according to the specified domain
             parameters_lal = self._convert_parameters_to_lal_frame(
-                parameters, self.lal_params, lal_target_function="SimInspiralFD"
+                parameters, self.mode_list, self.extrapolate, lal_target_function="SimInspiralFD"
             )
         elif isinstance(self.domain, TimeDomain):
             wf_generator = self.generate_TD_waveform
             # Convert to lalsimulation parameters according to the specified domain
             parameters_lal = self._convert_parameters_to_lal_frame(
-                parameters, self.lal_params, lal_target_function="SimInspiralTD"
+                parameters, self.mode_list,self.extrapolate, lal_target_function="SimInspiralTD"
             )
         else:
             raise ValueError(f"Unsupported domain type {type(self.domain)}.")
@@ -233,7 +239,8 @@ class WaveformGenerator:
     def _convert_parameters_to_lal_frame(
         self,
         parameter_dict: Dict,
-        lal_params=None,
+        mode_list=None,
+        extrapolate = False,
         lal_target_function=None,
     ) -> Tuple:
         """Convert to lal source frame parameters
@@ -281,6 +288,20 @@ class WaveformGenerator:
                 f"Unsupported lalsimulation waveform function {lal_target_function}."
             )
 
+        if mode_list is not None:
+            lal_params = self.setup_mode_array(self.mode_list)
+        elif extrapolate:
+
+            if mode_list is not None:
+                lal.DictInsertUINT4Value(lal_params, "unlimited_extrapolation", 1)
+            else:
+                lal_params = lal.CreateDict()
+                lal.DictInsertUINT4Value(lal_params, "unlimited_extrapolation", 1)
+
+
+        else:
+            lal_params = None
+        
         # Transform mass, spin, and distance parameters
         p, _ = convert_to_lal_binary_black_hole_parameters(parameter_dict)
 
@@ -960,7 +981,7 @@ class WaveformGenerator:
             # Precessing Spins
             if self.approximant in [52, 92, 93]:
                 parameters_lal_td_modes, iota = self._convert_parameters_to_lal_frame(
-                    {**parameters, "f_ref": self.f_ref},
+                    {**parameters, "f_ref": self.f_ref},self.mode_list,self.extrapolate
                     lal_target_function="SimInspiralChooseTDModes",
                 )
                 hlm_td = LS.SimInspiralChooseTDModes(*parameters_lal_td_modes)
