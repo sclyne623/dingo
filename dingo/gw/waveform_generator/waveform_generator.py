@@ -1,4 +1,4 @@
-lffrom functools import partial
+from functools import partial
 from multiprocessing import Pool
 from math import isclose
 
