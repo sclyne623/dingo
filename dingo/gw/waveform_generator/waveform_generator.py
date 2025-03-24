@@ -1,4 +1,4 @@
-from functools import partial
+lffrom functools import partial
 from multiprocessing import Pool
 from math import isclose
 
@@ -1006,7 +1006,7 @@ class WaveformGenerator:
                     hlm_td, iota = self.generate_TD_modes_L0(parameters)
                     if self.approximant_str == "SEOBNRv4HM":
                         parameters_lal, iota = self._convert_parameters_to_lal_frame(
-                            {**parameters, "f_ref": self.f_ref},
+                            {**parameters, "f_ref": self.f_ref},self.mode_list,self.extrapolate,
                             lal_target_function="SimIMRSpinAlignedEOBModes",
                         )
                         m1, m2, s1z, s2z = (
@@ -1018,7 +1018,7 @@ class WaveformGenerator:
 
                     elif self.approximant_str == "NRsur7dq4":
                         parameters_lal, iota = self._convert_parameters_to_lal_frame(
-                            {**parameters, "f_ref": self.f_ref},
+                            {**parameters, "f_ref": self.f_ref},self.mode_list,self.extrapolate,
                             lal_target_function="SimInspiralChooseTDModes",
                         )
                         m1, m2, s1z, s2z = (
@@ -1052,7 +1052,7 @@ class WaveformGenerator:
                     original_f_min = self.domain.f_min
                     #Generate LAL parameters first to get new starting frequency
                     parameters_lal, iota = self._convert_parameters_to_lal_frame(
-                            {**parameters, "f_ref": self.f_ref},
+                            {**parameters, "f_ref": self.f_ref},self.mode_list,self.extrapolate,
                             lal_target_function="SimInspiralChooseTDModes",
                         )
                     m1, m2, s1z, s2z = (
