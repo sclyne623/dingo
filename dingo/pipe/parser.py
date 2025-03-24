@@ -68,7 +68,7 @@ def create_parser(top_level=True):
     calibration_parser = parser.add_argument_group(
         "Calibration arguments",
         description="Which calibration model and settings to use. Calibration "
-                    "uncertainty is marginalizaed over during importance sampling.",
+        "uncertainty is marginalizaed over during importance sampling.",
     )
     calibration_parser.add(
         "--calibration-model",
@@ -76,6 +76,15 @@ def create_parser(top_level=True):
         default=None,
         choices=["CubicSpline", None],
         help="Choice of calibration model, if None, no calibration is used",
+    )
+
+    calibration_parser.add(
+        "--calibration-correction-type",
+        type=nonestr,
+        default="data",
+        help=("Type of calibration correction: can be either `data` or `template`."
+        " See https://bilby-dev.github.io/bilby/api/bilby.gw.detector.calibration.html "
+        "for more information.")
     )
 
     calibration_parser.add(
@@ -96,8 +105,10 @@ def create_parser(top_level=True):
         "--spline-calibration-curves",
         type=int,
         default=1000,
-        help=("Number of calibration curves to use in marginalizing over calibration "
-              "uncertainty"),
+        help=(
+            "Number of calibration curves to use in marginalizing over calibration "
+            "uncertainty"
+        ),
     )
     #
     # calibration_parser.add(
@@ -152,9 +163,9 @@ def create_parser(top_level=True):
             "--importance-sampling-generation",
             action="store_true",
             help="Whether to prepare data based on the updated importance sampling "
-                 "settings rather than network settings. This is used internally for "
-                 "data generation, when preparing different data for the importance "
-                 "sampling stage.",
+            "settings rather than network settings. This is used internally for "
+            "data generation, when preparing different data for the importance "
+            "sampling stage.",
         )
 
     data_gen_pars = parser.add_argument_group(
@@ -589,6 +600,12 @@ def create_parser(top_level=True):
         ),
     )
     submission_parser.add(
+        "--conda-env",
+        type=nonestr,
+        default=None,
+        help="Either a conda environment name of a absolute path to the conda env folder.",
+    )
+    submission_parser.add(
         "--request-cpus-importance-sampling",
         type=int,
         default=1,
@@ -609,9 +626,7 @@ def create_parser(top_level=True):
     submission_parser.add(
         "--extra-lines",
         action="append",
-        help=(
-            "List of additional lines to include for all HTCondor submissions."
-        ),
+        help=("List of additional lines to include for all HTCondor submissions."),
     )
     submission_parser.add(
         "--simple-submission",
@@ -620,12 +635,6 @@ def create_parser(top_level=True):
             "Strip off the following lines from submission files: getenv, universe, "
             "accounting_group, priority."
         ),
-    )
-    submission_parser.add(
-        "--conda-env",
-        type=nonestr,
-        default=None,
-        help="Either a conda environment name of a absolute path to the conda env folder.",
     )
     submission_parser.add(
         "--scheduler",
@@ -741,12 +750,21 @@ def create_parser(top_level=True):
         help="If true, format condor submission for running on OSG, default is False",
     )
     submission_parser.add(
-        "--desired-sites",
+        "--gpu-desired-sites",
         type=nonestr,
         help=(
             "A comma-separated list of desired sites, wrapped in quoates."
             " e.g., desired-sites='site1,site2'. This can be used on the OSG"
-            " to specify specific run nodes."
+            " to specify specific run nodes. This determines which GPU site to use."
+        ),
+    )
+    submission_parser.add(
+        "--cpu-desired-sites",
+        type=nonestr,
+        help=(
+            "A comma-separated list of desired sites, wrapped in quoates."
+            " e.g., desired-sites='site1,site2'. This can be used on the OSG"
+            " to specify specific run nodes. This determines which CPU site to use."
         ),
     )
     submission_parser.add(
@@ -770,7 +788,32 @@ def create_parser(top_level=True):
             " they will be passed to the executable directly."
         ),
     )
-
+    submission_parser.add(
+        "--scitoken-issuer",
+        default=None,
+        type=nonestr,
+        choices=[None, "None", "igwn", "local"],
+        help=(
+            "The issuer of the scitoken to use for accessing IGWN proprietary "
+            "data/services. If not given, this is automatically set based on "
+            "the machine being used. This should only be set if you are planning "
+            "to submit from a different machine to the one you are running on. "
+            "The allowed options are :code:`igwn` and :code:`local`. "
+            "For more details see "
+            "https://computing.docs.ligo.org/guide/htcondor/credentials."
+        ),
+    )
+    submission_parser.add(
+        "--container",
+        default=None,
+        type=nonestr,
+        help=(
+            "(Optional) singularity image to use, see "
+            "https://computing.docs.ligo.org/guide/htcondor/software "
+            "and https://computing.docs.ligo.org/guide/dhtc/containers "
+            "for more details."
+        ),
+    )
     # likelihood_parser = parser.add_argument_group(
     #     title="Likelihood arguments",
     #     description="Options for setting up the likelihood.",
@@ -1313,9 +1356,7 @@ def create_parser(top_level=True):
         "--importance-sample",
         action=StoreBoolean,
         default=True,
-        help=(
-            "Whether to perform importance sampling on result. (Default: True)"
-        ),
+        help=("Whether to perform importance sampling on result. (Default: True)"),
     )
     sampler_parser.add(
         "--importance-sampling-settings",

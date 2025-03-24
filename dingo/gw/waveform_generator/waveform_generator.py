@@ -84,10 +84,12 @@ class WaveformGenerator:
                 # This LAL function does not work with waveforms using the new interface. TODO: Improve the check.
                 self.approximant = LS.GetApproximantFromString(approximant)
                 if mode_list is not None:
+
                      self.mode_list = mode_list
                 if extrapolate:
                     self.extrapolate = extrapolate
                 
+
 
         if not issubclass(type(domain), Domain):
             raise ValueError(
@@ -178,6 +180,7 @@ class WaveformGenerator:
         # Include reference frequency with the parameters. Copy the dict first for safety.
         parameters = parameters.copy()
         parameters["f_ref"] = self.f_ref
+
 
         # Generate GW polarizations
         if isinstance(self.domain, FrequencyDomain):
@@ -287,11 +290,9 @@ class WaveformGenerator:
             raise ValueError(
                 f"Unsupported lalsimulation waveform function {lal_target_function}."
             )
-
         if mode_list is not None:
             lal_params = self.setup_mode_array(self.mode_list)
         elif extrapolate:
-
             if mode_list is not None:
                 lal.DictInsertUINT4Value(lal_params, "unlimited_extrapolation", 1)
             else:
@@ -299,9 +300,11 @@ class WaveformGenerator:
                 lal.DictInsertUINT4Value(lal_params, "unlimited_extrapolation", 1)
 
 
+
         else:
             lal_params = None
         
+
         # Transform mass, spin, and distance parameters
         p, _ = convert_to_lal_binary_black_hole_parameters(parameter_dict)
 
@@ -889,8 +892,9 @@ class WaveformGenerator:
             # Step 3: Separate negative and positive frequency parts of the modes,
             # and add contributions according to their transformation behavior under
             # phase shifts.
+            
             pol_m = wfg_utils.get_polarizations_from_fd_modes_m(
-                hlm_fd, iota, parameters["phase"]
+                hlm_fd, iota, parameters["phase"], self.approximant_str
             )
 
         else:
@@ -917,9 +921,13 @@ class WaveformGenerator:
             values.
         iota: float
         """
-        # TD approximants that are implemented in J frame. Currently tested for:
-        #   101: IMRPhenomXPHM
-        if self.approximant in [101]:
+        #  FD Waveform approximants that are implemented in either the L0 or J frame.  Currently tested for:
+        #  IMRPhenomXPHM - Modes returned in J-Frame
+        #  IMRPhenomXHM - Modes returned in L0-Frame
+        
+        
+        tested_approximants = ["IMRPhenomXPHM","IMRPhenomXHM"]
+        if LS.GetStringFromApproximant(self.approximant) in tested_approximants:
             parameters_lal_fd_modes = self._convert_parameters(
                 {**parameters, "f_ref": self.f_ref},
                 lal_target_function="SimInspiralChooseFDModes",
@@ -929,17 +937,18 @@ class WaveformGenerator:
             # unpack linked list, convert lal objects to arrays
             hlm_fd = wfg_utils.linked_list_modes_to_dict_modes(hlm_fd)
             hlm_fd = {k: v.data.data for k, v in hlm_fd.items()}
-            # For the waveform models considered here (e.g., IMRPhenomXPHM), the modes
-            # are returned in the J frame (where the observer is at inclination=theta_JN,
-            # azimuth=0). In this frame, the dependence on the reference phase enters
-            # via the modes themselves. We need to convert to the L0 frame so that the
-            # dependence on phase enters via the spherical harmonics.
-            hlm_fd = frame_utils.convert_J_to_L0_frame(
-                hlm_fd,
-                parameters,
-                self,
-                spin_conversion_phase=self.spin_conversion_phase,
-            )
+
+            # For waveform models where the modes are returned in the J frame (where the observer is
+            # at an inclination=theta_JN, azimuth=0), the dependence on the reference phase enters
+            # via the modes themselves.  We need to convert to the L0 frame so that the
+            # dependence on phase enters via the spherical harmonics. 
+            if LS.GetStringFromApproximant(self.approximant) == "IMRPhenomXPHM":
+                hlm_fd = frame_utils.convert_J_to_L0_frame(
+                    hlm_fd,
+                    parameters,
+                    self,
+                    spin_conversion_phase=self.spin_conversion_phase,
+                )
             return hlm_fd, iota
         else:
             raise NotImplementedError(
@@ -1027,9 +1036,10 @@ class WaveformGenerator:
                 # SimIMRSpinAlignedEOBModes gives only positive m modes, but we need positive and negative m modes
                 wfg_utils.get_aligned_spin_negative_modes_in_place(hlm_td)
                 return hlm_td, iota
+
         else:
             raise NotImplementedError(
-                f"Approximant {LS.GetApproximantFromString(self.approximant)} not "
+                f"Approximant {self.approximant_str} not "
                 f"implemented. When adding this approximant to this method, make sure "
                 f"the the output dict hlm_td contains the TD modes in the *L0 frame*. "
                 f"In particular, adding an approximant that is implemented in the same "
@@ -1076,21 +1086,24 @@ class NewInterfaceWaveformGenerator(WaveformGenerator):
     """Generate polarizations using GWSignal routines in the specified domain for a
     single GW coalescence given a set of waveform parameters.
     """
+
     def __init__(self, **kwargs):
         WaveformGenerator.__init__(self, **kwargs)
 
-        # we want to import the new interface, but we don't want to import it 
+        # we want to import the new interface, but we don't want to import it
         # for all users because just importing the module causes unintended side effects
         # for example, you cannot pass the debugger through the import statement.
         # Thus we only import it when the class is instantiated.
-        # However, we don't want to reimport the module every time we need to 
-        # use the function as this is costly. Therefore, we import it once 
+        # However, we don't want to reimport the module every time we need to
+        # use the function as this is costly. Therefore, we import it once
         # when the class is instantiated and store it in the global namespace
         from lalsimulation.gwsignal.core import waveform
         from lalsimulation.gwsignal.models import gwsignal_get_waveform_generator
-        globals()['gws_wfm'] = waveform
-        globals()["new_interface_get_waveform_generator"] = gwsignal_get_waveform_generator 
 
+        globals()["gws_wfm"] = waveform
+        globals()[
+            "new_interface_get_waveform_generator"
+        ] = gwsignal_get_waveform_generator
 
         self.mode_list = kwargs.get("mode_list", None)
 
@@ -1470,7 +1483,7 @@ class NewInterfaceWaveformGenerator(WaveformGenerator):
         #   52: SEOBNRv4PHM
 
         parameters_gwsignal = self._convert_parameters(
-            {**parameters, "f_ref": self.f_ref}
+            {**parameters, "f_ref": self.f_ref, "mode_list":self.mode_list,"extrapolate":self.extrapolate}
         )
 
         generator = new_interface_get_waveform_generator(self.approximant_str)

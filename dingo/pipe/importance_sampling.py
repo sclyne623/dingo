@@ -86,6 +86,7 @@ class ImportanceSamplingInput(Input):
         self.spline_calibration_nodes = args.spline_calibration_nodes
         self.spline_calibration_envelope_dict = args.spline_calibration_envelope_dict
         self.spline_calibration_curves = args.spline_calibration_curves
+        self.calibration_correction_type = args.calibration_correction_type
 
         # # Marginalization
         # self.distance_marginalization = args.distance_marginalization
@@ -117,6 +118,7 @@ class ImportanceSamplingInput(Input):
                 "calibration_envelope": self.spline_calibration_envelope_dict,
                 "num_calibration_nodes": self.spline_calibration_nodes,
                 "num_calibration_curves": self.spline_calibration_curves,
+                "correction_type": self.calibration_correction_type,
             }
         elif self.calibration_model == None:
             return None
@@ -154,6 +156,16 @@ class ImportanceSamplingInput(Input):
             self._importance_sampling_settings = dict()
 
     def run_sampler(self):
+        if self.prior_dict:
+            logger.info("Updating prior from network prior. Changes:")
+            logger.info(
+                yaml.dump(
+                    self.prior_dict,
+                    default_flow_style=False,
+                    sort_keys=False,
+                )
+            )
+            self.result.update_prior(self.prior_dict)
         if "synthetic_phase" in self.importance_sampling_settings:
             logger.info("Sampling synthetic phase.")
             synthetic_phase_kwargs = {
@@ -173,16 +185,6 @@ class ImportanceSamplingInput(Input):
             calibration_marginalization_kwargs=self.calibration_marginalization_kwargs,
         )
 
-        if self.prior_dict:
-            logger.info("Updating prior from network prior. Changes:")
-            logger.info(
-                yaml.dump(
-                    self.prior_dict,
-                    default_flow_style=False,
-                    sort_keys=False,
-                )
-            )
-            self.result.update_prior(self.prior_dict)
 
         self.result.print_summary()
         self.result.to_file(os.path.join(self.result_directory, self.label + ".hdf5"))

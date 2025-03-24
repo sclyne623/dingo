@@ -11,14 +11,24 @@ from dingo.gw.training import (
 )
 
 
-def create_submission_file(train_dir, condor_settings, filename="submission_file.sub"):
+def create_submission_file(
+    train_dir: str, condor_settings: dict, filename: str = "submission_file.sub"
+):
     """
-    TODO: documentation
-    :param train_dir:
-    :param filename:
-    :return:
+    Creates submission file and writes it to filename.
+
+    Parameters
+    ----------
+    train_dir: str
+        Path to training directory
+    condor_settings: dict
+        Condor settings
+    filename: str
+        Filename of submission file
     """
     lines = []
+    # getenv required for GPU training because wandb needs $HOME to be defined
+    lines.append(f"getenv = True\n")
     lines.append(f'executable = {condor_settings["executable"]}\n')
     lines.append(f'request_cpus = {condor_settings["num_cpus"]}\n')
     lines.append(f'request_memory = {condor_settings["memory_cpus"]}\n')
@@ -27,7 +37,9 @@ def create_submission_file(train_dir, condor_settings, filename="submission_file
         f"requirements = TARGET.CUDAGlobalMemoryMb > "
         f'{condor_settings["memory_gpus"]}\n\n'
     )
-    lines.append(f'arguments = {condor_settings["arguments"]}\n')
+    if "request_disk" in condor_settings:
+        lines.append(f'request_disk = {condor_settings["request_disk"]}\n')
+    lines.append(f'arguments = "{condor_settings["arguments"]}"\n')
     lines.append(f'error = {join(train_dir, "info.err")}\n')
     lines.append(f'output = {join(train_dir, "info.out")}\n')
     lines.append(f'log = {join(train_dir, "info.log")}\n')
@@ -59,6 +71,12 @@ def train_condor():
     )
     parser.add_argument("--checkpoint", default="model_latest.pt")
     parser.add_argument("--start_submission", action="store_true")
+    parser.add_argument(
+        "--exit_command",
+        type=str,
+        default="",
+        help="Optional command to execute after completion of training.",
+    )
     args = parser.parse_args()
 
     # For condor settings, first try looking for a local settings file. Otherwise,
@@ -69,6 +87,7 @@ def train_condor():
     # else:
 
     if not args.start_submission:
+
         #
         # TRAIN
         #
@@ -120,13 +139,18 @@ def train_condor():
         #
 
         if complete:
-            print("Training complete, job will not be resubmitted.")
+            print(
+                f"Training complete, job will not be resubmitted. Executing exit command: {args.exit_command}."
+            )
+            if args.exit_command:
+                os.system(args.exit_command)
             sys.exit()
 
         else:
             condor_arguments = f"--train_dir {args.train_dir}"
 
     else:
+
         #
         # PREPARE FIRST SUBMISSION
         #
@@ -134,6 +158,9 @@ def train_condor():
         condor_arguments = f"--train_dir {args.train_dir}"
         if args.checkpoint != "model_latest.pt":
             condor_arguments += f" --checkpoint {args.checkpoint}"
+
+    if args.exit_command:
+        condor_arguments += f" --exit_command '{args.exit_command}'"
 
     submission_file = "submission_file.sub"
     with open(join(args.train_dir, "train_settings.yaml"), "r") as f:

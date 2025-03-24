@@ -70,29 +70,29 @@ here is the waveform dataset file
 
 ```yaml
 domain:
-type: FrequencyDomain
-f_min: 20.0
-f_max: 1024.0
-delta_f: 0.25  # Expressions like 1.0/8.0 would require eval and are not supported
+  type: FrequencyDomain
+  f_min: 20.0
+  f_max: 1024.0
+  delta_f: 0.25  # Expressions like 1.0/8.0 would require eval and are not supported
 
 waveform_generator:
-approximant: IMRPhenomD
-f_ref: 20.0
-# f_start: 15.0  # Optional setting useful for EOB waveforms. Overrides f_min when generating waveforms.
+  approximant: IMRPhenomD
+  f_ref: 20.0
+  # f_start: 15.0  # Optional setting useful for EOB waveforms. Overrides f_min when generating waveforms.
 
 # Dataset only samples over intrinsic parameters. Extrinsic parameters are chosen at train time.
 intrinsic_prior:
-mass_1: bilby.core.prior.Constraint(minimum=10.0, maximum=80.0)
-mass_2: bilby.core.prior.Constraint(minimum=10.0, maximum=80.0)
-chirp_mass: bilby.gw.prior.UniformInComponentsChirpMass(minimum=15.0, maximum=100.0)
-mass_ratio: bilby.gw.prior.UniformInComponentsMassRatio(minimum=0.125, maximum=1.0)
-phase: default
-chi_1: bilby.gw.prior.AlignedSpin(name='chi_1', a_prior=Uniform(minimum=0, maximum=0.9))
-chi_2: bilby.gw.prior.AlignedSpin(name='chi_2', a_prior=Uniform(minimum=0, maximum=0.9))
-theta_jn: default
-# Reference values for fixed (extrinsic) parameters. These are needed to generate a waveform.
-luminosity_distance: 100.0  # Mpc
-geocent_time: 0.0  # s
+  mass_1: bilby.core.prior.Constraint(minimum=10.0, maximum=80.0)
+  mass_2: bilby.core.prior.Constraint(minimum=10.0, maximum=80.0)
+  chirp_mass: bilby.gw.prior.UniformInComponentsChirpMass(minimum=15.0, maximum=100.0)
+  mass_ratio: bilby.gw.prior.UniformInComponentsMassRatio(minimum=0.125, maximum=1.0)
+  phase: default
+  chi_1: bilby.gw.prior.AlignedSpin(name='chi_1', a_prior=Uniform(minimum=0, maximum=0.9))
+  chi_2: bilby.gw.prior.AlignedSpin(name='chi_2', a_prior=Uniform(minimum=0, maximum=0.9))
+  theta_jn: default
+  # Reference values for fixed (extrinsic) parameters. These are needed to generate a waveform.
+  luminosity_distance: 100.0  # Mpc
+  geocent_time: 0.0  # s
 
 # Dataset size
 num_samples: 10000
@@ -164,7 +164,7 @@ The `asd_dataset_settings.yaml` file includes several attributes. `f_s` is the s
 Step 3 Training the network
 ---------------------------
 
-To train the network, first the paths to the correct datasets must be specfied
+To train the network, first the paths to the correct datasets must be specified before executing:
 
 ```
 dingo_train --settings_file train_settings.yaml --train_dir training
@@ -207,9 +207,9 @@ data:
 
 # Model architecture
 model:
-  type: nsf+embedding
+  posterior_model_type: normalizing_flow
   # kwargs for neural spline flow
-  nsf_kwargs:
+  posterior_kwargs:
     num_flow_steps: 5
     base_transform_kwargs:
       hidden_dim: 64 
@@ -220,7 +220,7 @@ model:
       num_bins: 8
       base_transform_type: rq-coupling
   # kwargs for embedding net
-  embedding_net_kwargs:
+  embedding_kwargs:
     output_dim: 128
     hidden_dims: [1024, 512, 256, 128]
     activation: elu
@@ -253,17 +253,18 @@ local:
     max_time_per_run: 36000
     max_epochs_per_run: 30
   checkpoint_epochs: 15
+  leave_waveforms_on_disk: True
 ```
 
 For training, several `extrinsic_priors` are set, which project the waveforms generated in step 1 onto the detector network according to the specified priors. This is considerably cheaper than generating waveforms sampled from the full intrinsic plus extrinsic prior in step 1.
 
-Another crucial setting is `inference_parameters`. By default all the parameters described in `dingo.gw.prior` are inferred. If a parameter needs to be marginalized over this parameter can be omitted from `inference_parameters`.
+Another crucial setting is `inference_parameters`. By default, all the parameters described in `dingo.gw.prior` are inferred. If a parameter needs to be marginalized over, this parameter can be omitted from `inference_parameters`.
 
-Essential settings for the model architecture (the neural spline flow and the embedding network) are as follows: `nsf_kwargs.num_flow_steps` describes the number of flow transforms from the base distribution to the final distribution, while `embedding_net_kwargs.hidden_dim` defines the dimensions of the neural network's hidden layer, which selects the most important data features. Finally, `embedding_net_kwargs.svd` describes the settings of the SVD used as a pre-processing step before passing data vectors to the embedding network. For a production network, these values should be much higher than those used in this tutorial.
+Essential settings for the model architecture of the normalizing flow (i.e., the neural spline flow and the embedding network) are as follows: `posterior_kwargs.num_flow_steps` describes the number of flow transforms from the base distribution to the final distribution, while `embedding_net_kwargs.hidden_dim` defines the dimensions of the neural network's hidden layer, which selects the most important data features. Finally, `embedding_net_kwargs.svd` describes the settings of the SVD used as a pre-processing step before passing data vectors to the embedding network. For a production network, these values should be much higher than those used in this tutorial.
 
 Next, we turn to the training section. Here we only employ a single stage of training with settings provided under the `stage_0` attribute. This stage uses the training dataset generated in step 1 for 30 epochs. We also specify the `asd_dataset_path` here, which was created in step 2.
 
-Finally, the local settings section affects only parallelization during training and the device used. An important setting here is `num_workers`, which determines how many PyTorch dataloader processes are spawned during training. If training is too slow, a potential cause is a lack of workers to load data into the network. This can be identified if the dataloader times in the `dingo_train` output exceed 100ms. The solution is generally to increase the number of workers.
+Finally, the local settings section specifies technical details of the training setup. It contains information about, e.g., parallelization during training and the device used. An important setting here is `num_workers`, which determines how many PyTorch dataloader processes are spawned during training. If training is too slow, a potential cause is a lack of workers to load data into the network. This can be identified if the dataloader times in the `dingo_train` output exceed 100ms. The solution is generally to increase the number of workers.
 
 Step 4 Doing Inference
 ----------------------
