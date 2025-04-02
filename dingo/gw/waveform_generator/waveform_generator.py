@@ -1858,7 +1858,7 @@ class LISAWaveformGenerator:
     
     
     def Generate_coarse_freq_grid(self,params):
-        fLow, fHigh = FrequencyBoundsLISATDI_SMBH(params, t0=0., timetomerger_max=1., minf=self.domain.f_min, maxf=self.domain.f_max, 
+        fLow, fHigh = wfg_utils.FrequencyBoundsLISATDI_SMBH(params, t0=0., timetomerger_max=1., minf=self.domain.f_min, maxf=self.domain.f_max, 
                                                   fstart22=None, fend22=None, tmin=None, tmax=None, Mfmax_model=0.3, 
                                                   DeltatL_cut=None, DeltatSSB_cut=None, scale_freq_hm=True, 
                                                   modes=None, f_t_acc=1e-06, approximant=self.approximant_str)
