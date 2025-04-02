@@ -1804,14 +1804,14 @@ class LISAWaveformGenerator:
         
         gridfreq = self.Generate_coarse_freq_grid(parameters)
         
-        if (approximant=='IMRPhenomD'):
+        if (self.approximant_str=='IMRPhenomD'):
 
         # Specifying fref_for_phiref, phiref defines the source frame
         # tref, fref_for_tref are not free, we set tf=0 (tSSB=t0) at fstart
             wfClass = pyIMRPhenomD.IMRPhenomDh22AmpPhase(gridfreq, parameters["m1"], parameters["m2"], parameters["chi1"], parameters["chi2"], parameters["dist"], tref=0., phiref=0., fref_for_tref=0., fref_for_phiref=0.,Deltat = parameters["Deltat"], force_phiref_fref=True, extra_params=None)
             wfhlm = wfClass.get_waveform()
             fpeak = wfClass.get_fpeak()
-        elif (approximant=='IMRPhenomHM'):
+        elif (self.approximant_str=='IMRPhenomHM'):
             # IMRPhenomHM
             # For now tf=0 at fpeak hardcoded
             # fref means fref_for_phiref, default fpeak
