@@ -31,6 +31,12 @@ from dingo.gw.domains import (
 )
 from dingo.gw.transforms.waveform_transforms import DecimateAll
 
+import lisabeta.lisa.lisatools as lisatools
+import lisabeta.pyconstants as pyconstants
+import lisabeta.waveforms.bbh.pyIMRPhenomHM as pyIMRPhenomHM
+import lisabeta.tools.pytools as pytools
+
+
 
 class WaveformGenerator:
     """Generate polarizations using LALSimulation routines in the specified domain for a
@@ -1637,3 +1643,237 @@ if __name__ == "__main__":
     plt.plot(x, pol["h_plus"].real)
     plt.plot(x, (pol_ref["h_plus"] - pol["h_plus"]).real)
     plt.show()
+
+
+class LISAWaveformGenerator:
+    """Generate Amplitude/Phase waveforms using lisabeta routines in the specified domain for a
+    single GW coalescence given a set of waveform parameters.
+    """
+
+    def __init__(
+        self,
+        approximant: str,
+        domain: Domain,
+        f_ref: float,
+        f_start: float = None,
+        mode_list: list[Tuple] = None,
+        transform=None,
+        spin_conversion_phase=None,
+        frozenLISA = False,
+        **kwargs,
+    ):
+        """
+        Parameters
+        ----------
+        approximant : str
+            Waveform "approximant" string understood by lalsimulation
+            This is defines which waveform model is used.
+        domain : Domain
+            Domain object that specifies on which physical domain the
+            waveform polarizations will be generated, e.g. Fourier
+            domain, time domain.
+        f_ref : float
+            Reference frequency for the waveforms
+        f_start : float
+            Starting frequency for waveform generation. This is optional, and if not
+            included, the starting frequency will be set to f_min. This exists so that
+            EOB waveforms can be generated starting from a lower frequency than f_min.
+        mode_list : List[Tuple]
+            A list of waveform (ell, m) modes to include when generating
+            the polarizations.
+        spin_conversion_phase : float = None
+            Value for phiRef when computing cartesian spins from bilby spins via
+            bilby_to_lalsimulation_spins. The common convention is to use the value of
+            the phase parameter here, which is also used in the spherical harmonics
+            when combining the different modes. If spin_conversion_phase = None,
+            this default behavior is adapted.
+            For dingo, this convention for the phase parameter makes it impossible to
+            treat the phase as an extrinsic parameter, since we can only account for
+            the change of phase in the spherical harmonics when changing the phase (in
+            order to also change the cartesian spins -- specifically, to rotate the spins
+            by phase in the sx-sy plane -- one would need to recompute the modes,
+            which is expensive).
+            By setting spin_conversion_phase != None, we impose the convention to always
+            use phase = spin_conversion_phase when computing the cartesian spins.
+        """
+        if not isinstance(approximant, str):
+            raise ValueError("approximant should be a string, but got", approximant)
+        else:
+            self.approximant_str = approximant
+    
+        if not issubclass(type(domain), Domain):
+            raise ValueError(
+                "domain should be an instance of a subclass of Domain, but got",
+                type(domain),
+            )
+        else:
+            self.domain = domain
+
+        self.f_ref = f_ref
+        self.f_start = f_start
+
+        self.transform = transform
+        self.frozenLISA = frozenLISA
+    
+    @property
+    def domain(self):
+        if self._use_base_domain:
+            return self._domain.base_domain
+        else:
+            return self._domain
+
+    @domain.setter
+    def domain(self, value):
+        self._domain = value
+        if isinstance(
+            self._domain, MultibandedFrequencyDomain
+        ) and not LS.SimInspiralImplementedFDApproximants(self.approximant):
+            # For non-frequency domain approximants, generate waveforms in the base
+            # UniformFrequencyDomain, and later decimate.
+            self._use_base_domain = True
+            self._domain_transform = DecimateAll(self._domain)
+        else:
+            # For frequency-domain approximants, generate waveforms directly in either
+            # UFD or MFD.
+            self._use_base_domain = False
+            self._domain_transform = None
+
+    @property
+    def full_domain(self):
+        return self._domain
+    
+    
+    
+        
+    def generate_amp_phase(
+        self, parameters: Dict[str, float], catch_waveform_errors=True,
+    ) -> Dict[str, np.ndarray]:
+        """Generate GW polarizations (h_plus, h_cross).
+
+        If the generation of the lalsimulation waveform fails with an
+        "Input domain error", we return NaN polarizations.
+
+        Use the domain, approximant, and mode_list specified in the constructor
+        along with the waveform parameters to generate the waveform polarizations.
+
+
+        Parameters
+        ----------
+        parameters: Dict[str, float]
+            A dictionary of parameter names and scalar values.
+            The parameter dictionary must include the following keys.
+            For masses, spins, and distance there are multiple options.
+
+            Mass: (mass_1, mass_2) or a pair of quantities from
+                ((chirp_mass, total_mass), (mass_ratio, symmetric_mass_ratio))
+            Spin:
+                (a_1, a_2, tilt_1, tilt_2, phi_12, phi_jl) if precessing binary or
+                (chi_1, chi_2) if the binary has aligned spins
+            Reference frequency: f_ref at which spin vectors are defined
+            Extrinsic:
+                Distance: one of (luminosity_distance, redshift, comoving_distance)
+                Inclination: theta_jn
+                Reference phase: phase
+                Geocentric time: geocent_time (GPS time)
+            The following parameters are not required:
+                Sky location: ra, dec,
+                Polarization angle: psi
+            Units:
+                Masses should be given in units of solar masses.
+                Distance should be given in megaparsecs (Mpc).
+                Frequencies should be given in Hz and time in seconds.
+                Spins should be dimensionless.
+                Angles should be in radians.
+
+        catch_waveform_errors: bool
+            Whether to catch lalsimulation errors
+
+        Returns
+        -------
+        wf_dict:
+            A dictionary of generated waveform polarizations
+        """
+    
+        parameters = parameters.copy()
+        
+        #Convert everything to SSB frame
+        parameters = self.convert_parameters(parameters,self.frozenLISA)
+        
+        #parameters["f_ref"] = self.f_ref
+
+        
+        gridfreq = self.Generate_coarse_freq_grid(parameters)
+        
+        if (approximant=='IMRPhenomD'):
+
+        # Specifying fref_for_phiref, phiref defines the source frame
+        # tref, fref_for_tref are not free, we set tf=0 (tSSB=t0) at fstart
+            wfClass = pyIMRPhenomD.IMRPhenomDh22AmpPhase(gridfreq, parameters["m1"], parameters["m2"], parameters["chi1"], parameters["chi2"], parameters["dist"], tref=0., phiref=0., fref_for_tref=0., fref_for_phiref=0.,Deltat = parameters["Deltat"], force_phiref_fref=True, extra_params=None)
+            wfhlm = wfClass.get_waveform()
+            fpeak = wfClass.get_fpeak()
+        elif (approximant=='IMRPhenomHM'):
+            # IMRPhenomHM
+            # For now tf=0 at fpeak hardcoded
+            # fref means fref_for_phiref, default fpeak
+            wfClass = pyIMRPhenomHM.IMRPhenomHMhlmAmpPhase(gridfreq,parameters["m1"], parameters["m2"], parameters["chi1"], parameters["chi2"],parameters["dist"], phiref=0., fref=0.,Deltat = parameters["Deltat"], scale_freq_hm=True, extra_params=None)
+            wfhlm = wfClass.get_waveform()
+        return wfhlm
+            
+            
+        
+        
+        
+        
+            
+        
+    
+    
+        
+    
+    def convert_parameters(self,parameters,frozenLISA, t0=0.):
+        """ Convert parameters for LISA analysis.  
+        We set all parameters to be set into the SSB frame if they aren't already.  
+        We also complete mass and spin parameters 
+        
+        parameters
+        ----------
+        parameters: Dict[str, float]
+            A dictionary of parameter names and scalar values
+        t0: 
+            Reference time (yr), so that t=0 for the waveform
+            corresponds to t0 in the SSB-frame
+        frozenLISA: 
+            Whether to keep detector arms fixed
+        
+        """
+        if parameters.get('Lframe', False):
+            parameters = lisatools.convert_Lframe_to_SSBframe(parameters,
+                                                          t0=t0,
+                                                          frozenLISA=frozenLISA)
+
+        parameters = pytools.complete_mass_params(parameters)
+        parameters = pytools.complete_spin_params(parameters)
+        
+        return parameters
+    
+    
+    def Generate_coarse_freq_grid(self,params):
+        fLow, fHigh = FrequencyBoundsLISATDI_SMBH(params, t0=0., timetomerger_max=1., minf=self.domain.f_min, maxf=self.domain.f_max, 
+                                                  fstart22=None, fend22=None, tmin=None, tmax=None, Mfmax_model=0.3, 
+                                                  DeltatL_cut=None, DeltatSSB_cut=None, scale_freq_hm=True, 
+                                                  modes=None, f_t_acc=1e-06, approximant=self.approximant_str)
+        if "M" not in params.keys():
+            params = pytools.complete_mass_params(params)
+        
+        if isinstance(fLow, dict) and isinstance(fHigh, dict):
+            gridfreqClass = pytools.FrequencyGrid(fLow[(2,2)], fHigh[(2,2)], params["M"], params["q"], acc=acc, DeltalnMf_max=0.025)
+            gridfreq22 = gridfreqClass.get_freq()
+            gridfreq = {}
+            for lm in modes:
+                gridfreq[lm] = pytools.log_affine_scaling(gridfreq22, fLow[lm], fHigh[lm])
+        else:
+            # For PhenomHM will be rescaled by m/2 for different modes hlm
+            gridfreqClass = pytools.FrequencyGrid(fLow, fHigh, params["M"], params["q"], acc=1e-04, DeltalnMf_max=0.025)
+            gridfreq = gridfreqClass.get_freq()
+
+        return gridfreq
