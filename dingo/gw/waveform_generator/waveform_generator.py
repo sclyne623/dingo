@@ -1513,7 +1513,14 @@ def generate_waveforms_task_func(
     The generated waveform polarization dictionary
     """
     parameters = args[1].to_dict()
-    return waveform_generator.generate_hplus_hcross(parameters)
+
+    
+    if isinstance(waveform_generator, LISAWaveformGenerator):
+        # If it's a LISAwaveformGenerator, use generate_amp_phase
+        return waveform_generator.generate_amp_phase(parameters)
+    
+    else:
+        return waveform_generator.generate_hplus_hcross(parameters)
 
 
 def generate_waveforms_parallel(
@@ -1521,7 +1528,12 @@ def generate_waveforms_parallel(
     parameter_samples: pd.DataFrame,
     pool: Pool = None,
 ) -> Dict[str, np.ndarray]:
-    """Generate a waveform dataset, optionally in parallel.
+    """ NOTE TO SELF: this function returns a dict where each mode is stacked
+    So if i call this function with 2 draws of parameters and do generate_waveforms_parallel()[(2,2)]
+    I'll get an array where the first entry is the 2,2 dict for the first waveform (freq, amp, phase, tf) 
+    and the second entry is th 2,2 dict for the second waveform.
+    
+    Generate a waveform dataset, optionally in parallel.
 
     Parameters
     ----------
@@ -1545,14 +1557,14 @@ def generate_waveforms_parallel(
     task_data = parameter_samples.iterrows()
 
     if pool is not None:
-        polarizations_list = pool.map(task_func, task_data)
+        waveform_dict_list = pool.map(task_func, task_data)
     else:
-        polarizations_list = list(map(task_func, task_data))
-    polarizations = {
-        pol: np.stack([wf[pol] for wf in polarizations_list])
-        for pol in polarizations_list[0].keys()
+        waveform_dict_list = list(map(task_func, task_data))
+    waveform_dict = {
+        pol: np.stack([wf[pol] for wf in waveform_dict_list])
+        for pol in waveform_dict_list[0].keys()
     }
-    return polarizations
+    return waveform_dict
 
 
 def sum_contributions_m(x_m, phase_shift=0.0):
