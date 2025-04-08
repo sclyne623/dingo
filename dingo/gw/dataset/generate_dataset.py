@@ -20,6 +20,7 @@ from dingo.gw.SVD import ApplySVD, SVDBasis
 from dingo.gw.transforms import WhitenFixedASD
 from dingo.gw.waveform_generator import (
     NewInterfaceWaveformGenerator,
+    LISAWaveformGenerator,
     WaveformGenerator,
     generate_waveforms_parallel,
 )
