@@ -26,7 +26,7 @@ from dingo.gw.waveform_generator import (
 from dingo.core.utils.misc import call_func_strict_output_dim
 
 
-def generate_parameters_and_polarizations(
+def generate_parameters_and_waveforms(
     waveform_generator: WaveformGenerator,
     prior: BBHPriorDict,
     num_samples: int,
@@ -45,21 +45,25 @@ def generate_parameters_and_polarizations(
     Returns
     -------
     pandas DataFrame of parameters
-    dictionary of numpy arrays corresponding to waveform polarizations
+    dictionary of numpy arrays corresponding to waveform dictionary.  
     """
     print("Generating dataset of size " + str(num_samples))
     parameters = pd.DataFrame(prior.sample(num_samples))
+    
+    if isinstance(waveform_generator, LISAWaveformGenerator):
+    
+        #Rename parameters to be consistent wit lisabeta code
+        parameters = parameters.rename(columns = {"chirp_mass":"Mchirp", "mass_ratio":"q","chi_1":"chi1","chi_2":"chi2"})
 
     if num_processes > 1:
         with threadpool_limits(limits=1, user_api="blas"):
             with Pool(processes=num_processes) as pool:
-                polarizations = generate_waveforms_parallel(
+                waveforms = generate_waveforms_parallel(
                     waveform_generator, parameters, pool
                 )
     else:
-        polarizations = generate_waveforms_parallel(waveform_generator, parameters)
-
-    # Find cases where waveform generation failed and only return data for successful ones
+        waveforms = generate_waveforms_parallel(waveform_generator, parameters)
+    '''
     wf_failed = np.any(np.isnan(polarizations["h_plus"]), axis=1)
     if wf_failed.any():
         idx_failed = np.where(wf_failed)[0]
@@ -76,9 +80,9 @@ def generate_parameters_and_polarizations(
             f"Only returning the {len(idx_ok)} successfully generated configurations."
         )
         return parameters_ok, polarizations_ok
-
-    return parameters, polarizations
-
+    '''
+    
+    return parameters, waveforms
 
 def train_svd_basis(dataset: WaveformDataset, size: int, n_train: int):
     """
