@@ -63,6 +63,8 @@ def generate_parameters_and_waveforms(
                 )
     else:
         waveforms = generate_waveforms_parallel(waveform_generator, parameters)
+
+    #This section commented out for now.  Need to add back later.
     '''
     wf_failed = np.any(np.isnan(polarizations["h_plus"]), axis=1)
     if wf_failed.any():
@@ -162,8 +164,16 @@ def generate_dataset(settings: Dict, num_processes: int) -> WaveformDataset:
     domain = build_domain(settings["domain"])
 
     new_interface_flag = settings["waveform_generator"].get("new_interface", False)
+    LISA_flag = settings["waveform_generator"].get("LISA", False)
+    
     if new_interface_flag:
         waveform_generator = NewInterfaceWaveformGenerator(
+            domain=domain,
+            **settings["waveform_generator"],
+        )
+    #We add ne flag to check if LISA waveforms being analyzed
+    elif LISA_flag:
+        waveform_generator = LISAWaveformGenerator(
             domain=domain,
             **settings["waveform_generator"],
         )
@@ -203,12 +213,12 @@ def generate_dataset(settings: Dict, num_processes: int) -> WaveformDataset:
                 n_test = svd_settings.get("num_validation_samples", 0)
 
                 func = partial(
-                    generate_parameters_and_polarizations,
+                    generate_parameters_and_waveforms,
                     waveform_generator,
                     prior,
                     num_processes=num_processes,
                 )
-                parameters, polarizations = call_func_strict_output_dim(
+                parameters, waveforms = call_func_strict_output_dim(
                     func, n_train + n_test
                 )
                 svd_dataset_settings = copy.deepcopy(settings)
@@ -225,7 +235,7 @@ def generate_dataset(settings: Dict, num_processes: int) -> WaveformDataset:
                 svd_dataset = WaveformDataset(
                     dictionary={
                         "parameters": parameters,
-                        "polarizations": polarizations,
+                        "waveforms": waveforms,
                         "settings": svd_dataset_settings,
                     }
                 )
@@ -239,16 +249,18 @@ def generate_dataset(settings: Dict, num_processes: int) -> WaveformDataset:
         waveform_generator.transform = Compose(compression_transforms)
 
     func = partial(
-        generate_parameters_and_polarizations,
+        generate_parameters_and_waveforms,
         waveform_generator,
         prior,
         num_processes=num_processes,
     )
-    parameters, polarizations = call_func_strict_output_dim(
+    parameters, waveforms = call_func_strict_output_dim(
         func, settings["num_samples"]
     )
     dataset_dict["parameters"] = parameters
-    dataset_dict["polarizations"] = polarizations
+    #need to change the WaveformDataset object to have waveform_dict instead of polarizations
+    #Then this line needs to change
+    dataset_dict["polarizations"] = waveforms 
 
     dataset_dict[settings["num_samples"]] = len(parameters)
     dataset = WaveformDataset(dictionary=dataset_dict)
