@@ -110,7 +110,7 @@ class WaveformDataset(DingoDataset, torch.utils.data.Dataset):
         #the function sets all the waveforms for index where f < f_min to 0
         #adding flag until this can be properly addressed.
         lisa_flag = self.settings["waveform_generator"].get("LISA",False)
-        if lisa_flag == False
+        if lisa_flag == False:
             self.update_domain(domain_update)
 
         # Update dtypes if necessary
