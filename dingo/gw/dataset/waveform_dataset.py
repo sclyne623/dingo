@@ -105,7 +105,13 @@ class WaveformDataset(DingoDataset, torch.utils.data.Dataset):
         # We always call update_domain() (even if domain_update is None) because we
         # want to be sure that the data are consistent with the saved settings. In
         # particular, this zeroes the waveforms for f < f_min.
-        self.update_domain(domain_update)
+
+        #This does not apply to LISA.  Currently if update_domain() is called
+        #the function sets all the waveforms for index where f < f_min to 0
+        #adding flag until this can be properly addressed.
+        lisa_flag = self.settings["waveform_generator"].get("LISA",False)
+        if lisa_flag == False
+            self.update_domain(domain_update)
 
         # Update dtypes if necessary
         if self.precision is not None:
