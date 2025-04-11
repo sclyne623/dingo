@@ -1528,11 +1528,7 @@ def generate_waveforms_parallel(
     parameter_samples: pd.DataFrame,
     pool: Pool = None,
 ) -> Dict[str, np.ndarray]:
-    """ NOTE TO SELF: this function returns a dict where each mode is stacked
-    So if i call this function with 2 draws of parameters and do generate_waveforms_parallel()[(2,2)]
-    I'll get an array where the first entry is the 2,2 dict for the first waveform (freq, amp, phase, tf) 
-    and the second entry is th 2,2 dict for the second waveform.
-    
+    """ 
     Generate a waveform dataset, optionally in parallel.
 
     Parameters
@@ -1560,10 +1556,23 @@ def generate_waveforms_parallel(
         waveform_dict_list = pool.map(task_func, task_data)
     else:
         waveform_dict_list = list(map(task_func, task_data))
-    waveform_dict = {
-        pol: np.stack([wf[pol] for wf in waveform_dict_list])
+
+    #This try statement checks whether waveforms are LIGO or LISA.  The coarse waveforms
+    #with LISA need not be the same length which would cause an error with np.stack.  So if
+    #The waveform are LISA is creates a list instead of an array.
+    try:
+        waveform_dict = {
+            pol: np.stack([wf[pol] for wf in waveform_dict_list])
+            for pol in waveform_dict_list[0].keys()
+        }
+    except: 
+        waveform_dict = {
+        pol: {
+            key: [wf[pol][key] for wf in waveform_dict_list]
+            for key in waveform_dict_list[0][pol].keys()
+        }
         for pol in waveform_dict_list[0].keys()
-    }
+        }    
     return waveform_dict
 
 
