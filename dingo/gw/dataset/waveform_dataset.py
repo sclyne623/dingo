@@ -267,7 +267,10 @@ class WaveformDataset(DingoDataset, torch.utils.data.Dataset):
     def __getitems__(
         self, batched_idx: list[int]
     ) -> list[Dict[str, Dict[str, Union[float, np.ndarray]]]]:
-        """
+        """ NOTE TO SELF: NEED TO MAKE ALL THE POLARIZATIONS CONSISTENT WITH THE ONE AT THE END
+            THAT ALLOWS FOR LISA WAVEFORMS
+
+        
         Return a nested dictionary containing parameters and waveform polarizations
         for sample with index `idx`. If defined, a chain of transformations is applied to
         the waveform data.
@@ -323,9 +326,13 @@ class WaveformDataset(DingoDataset, torch.utils.data.Dataset):
             parameters = {
                 k: v.to_numpy() for k, v in self.parameters.iloc[batched_idx].items()
             }
+            #This line adds support for the extra dict layer in LISA waveforms
             polarizations = {
-                pol: waveforms[batched_idx]
-                for pol, waveforms in self.polarizations.items()
+                pol: {
+                    key: val[batched_idx]
+                    for key, val in waveforms.items()
+                } if isinstance(waveforms, dict) else waveforms[batched_idx]
+                for pol, waveforms in wfds.polarizations.items()
             }
 
         # Decompression transforms are assumed to apply only to the waveform,
