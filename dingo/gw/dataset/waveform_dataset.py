@@ -332,7 +332,7 @@ class WaveformDataset(DingoDataset, torch.utils.data.Dataset):
                     key: val[batched_idx]
                     for key, val in waveforms.items()
                 } if isinstance(waveforms, dict) else waveforms[batched_idx]
-                for pol, waveforms in wfds.polarizations.items()
+                for pol, waveforms in self.polarizations.items()
             }
 
         # Decompression transforms are assumed to apply only to the waveform,
