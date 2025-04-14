@@ -8,6 +8,7 @@ from dingo.core.dataset import DingoDataset, recursive_hdf5_load
 from dingo.gw.SVD import SVDBasis, ApplySVD
 from dingo.gw.domains import build_domain
 from dingo.gw.transforms import WhitenFixedASD
+from dingo.gw.utils import get_batch
 
 
 class WaveformDataset(DingoDataset, torch.utils.data.Dataset):
@@ -329,10 +330,10 @@ class WaveformDataset(DingoDataset, torch.utils.data.Dataset):
             #This line adds support for the extra dict layer in LISA waveforms
             polarizations = {
                 pol: {
-                    key: val[batched_idx]
+                    key: get_batch(val, batched_idx)
                     for key, val in waveforms.items()
-                } if isinstance(waveforms, dict) else waveforms[batched_idx]
-                for pol, waveforms in self.polarizations.items()
+                } if isinstance(waveforms, dict) else get_batch(waveforms, batched_idx)
+                for pol, waveforms in wfds.polarizations.items()
             }
 
         # Decompression transforms are assumed to apply only to the waveform,
