@@ -330,9 +330,9 @@ class WaveformDataset(DingoDataset, torch.utils.data.Dataset):
             #This line adds support for the extra dict layer in LISA waveforms
             polarizations = {
                 pol: {
-                    key: get_batch(val, batched_idx)
+                    key: self.get_batch(val, batched_idx)
                     for key, val in waveforms.items()
-                } if isinstance(waveforms, dict) else get_batch(waveforms, batched_idx)
+                } if isinstance(waveforms, dict) else self.get_batch(waveforms, batched_idx)
                 for pol, waveforms in self.polarizations.items()
             }
 
@@ -364,6 +364,15 @@ class WaveformDataset(DingoDataset, torch.utils.data.Dataset):
         else:
             raise NotImplementedError()
         return data
+
+    def get_batch(self,arr_list, indices):
+        #Function useful for LISA waveform batching where waveform data
+        #lengths can be different sizes and thus we stack arrays in a list rather than
+        #arrays.  
+        if isinstance(arr_list, list):
+            return [arr_list[i] for i in indices]
+        else:
+            return arr_list[indices]
 
     def __del__(self):
         # Close hdf5 file when wfd is deleted
