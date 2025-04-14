@@ -8,7 +8,7 @@ from dingo.core.dataset import DingoDataset, recursive_hdf5_load
 from dingo.gw.SVD import SVDBasis, ApplySVD
 from dingo.gw.domains import build_domain
 from dingo.gw.transforms import WhitenFixedASD
-from dingo.gw.utils import get_batch
+from dingo.gw.dataset.utils import get_batch
 
 
 class WaveformDataset(DingoDataset, torch.utils.data.Dataset):
