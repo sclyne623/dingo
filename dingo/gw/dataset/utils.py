@@ -158,3 +158,13 @@ def build_svd_cli():
         f"generate certain waveforms."
     )
     basis.to_file(args.out_file)
+
+
+def get_batch(arr_list, indices):
+    #Function useful for LISA waveform batching where waveform data
+    #lengths can be different sizes and thus we stack arrays in a list rather than
+    #arrays.  
+    if isinstance(arr_list, list):
+        return [arr_list[i] for i in indices]
+    else:
+        return arr_list[indices]
