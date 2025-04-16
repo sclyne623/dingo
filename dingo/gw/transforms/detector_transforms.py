@@ -8,6 +8,9 @@ from typing import Union
 from bilby.gw.detector import calibration
 from bilby.gw.prior import CalibrationPriorDict
 
+import lisabeta.lisa.pyresponse as pyresponse
+import lisabeta.tools.pyspline as pyspline
+
 
 CC = 299792458.0
 
@@ -88,6 +91,76 @@ def time_delay_from_geocenter(
             + (detector_2[2] - detector_1[2]) * costheta
         ) / CC
 
+def process_transfer(freq_grid,amp,phase,tf,t0,l,m,inc,phi,lambd, beta, psi,interp_freqs,f_min,detector_type,LISAconst, 
+                    responseapprox, frozenLISA,TDIrescaled):
+                    """helper function for the ProjectontoSpaceDetector class.  The class is designed to work with a
+                     multidimensional array that comes with batching, but the actual transfer function code only 
+                     likes 1D arrays, so that part gets broken out here.  Currently needs f_min argument that should be addressed
+                     elsewhere.
+                    """
+                    
+                    #Class called for each waveform dependent on extrinsic parameters 
+                    #Also where detector settings are added
+                    tdiClass = pyresponse.LISAFDresponseTDI3Chan(freq_grid, tf, 
+                                                         t0, l, m, inc, phi, lambd, beta, psi, 
+                                                         detector_type,LISAconst, responseapprox, frozenLISA, 
+                                                         TDIrescaled)
+                    
+                    #Get Transfer function that amp-phase waveform gets multiplied with
+                    phaseRdelay, transferL1, transferL2, transferL3 = tdiClass.get_response() 
+                    
+                    #calculate complex amplitudes and new phase
+
+                    camp1 = amp * transferL1
+                    camp2 = amp * transferL2
+                    camp3 = amp * transferL3
+                    phasetot = phase + phaseRdelay #PhaseRDelay to account for detector length delays
+                    
+                    #Break each amplitude into real and complex for each channel and interpolate
+                    amp_real_chan1 = np.copy(np.real(camp1))
+                    amp_imag_chan1 = np.copy(np.imag(camp1))
+                    amp_real_chan2 = np.copy(np.real(camp2))
+                    amp_imag_chan2 = np.copy(np.imag(camp2))
+                    amp_real_chan3 = np.copy(np.real(camp3))
+                    amp_imag_chan3 = np.copy(np.imag(camp3))
+                    #Interpolation.  Need to initialize classes to do this currently.
+                    spline_amp_real_chan1Class = pyspline.CubicSpline(freq_grid, amp_real_chan1)
+                    spline_amp_imag_chan1Class = pyspline.CubicSpline(freq_grid, amp_imag_chan1)
+                    spline_amp_real_chan2Class = pyspline.CubicSpline(freq_grid, amp_real_chan2)
+                    spline_amp_imag_chan2Class = pyspline.CubicSpline(freq_grid, amp_imag_chan2)
+                    spline_amp_real_chan3Class = pyspline.CubicSpline(freq_grid, amp_real_chan3)
+                    spline_amp_imag_chan3Class = pyspline.CubicSpline(freq_grid, amp_imag_chan3)
+                    spline_phaseClass = pyspline.CubicSpline(freq_grid, phasetot)
+                    
+                    spline_amp_real_chan1 = spline_amp_real_chan1Class.get_spline()
+                    spline_amp_imag_chan1 = spline_amp_imag_chan1Class.get_spline()
+                    spline_amp_real_chan2 = spline_amp_real_chan2Class.get_spline()
+                    spline_amp_imag_chan2 = spline_amp_imag_chan2Class.get_spline()
+                    spline_amp_real_chan3 = spline_amp_real_chan3Class.get_spline()
+                    spline_amp_imag_chan3 = spline_amp_imag_chan3Class.get_spline()
+                    spline_phase = spline_phaseClass.get_spline()
+                    # Evaluate splines
+                    ampreal_chan1 = pyspline.spline_eval_vector(spline_amp_real_chan1, interp_freqs, extrapol_zero=True)
+                    ampimag_chan1 = pyspline.spline_eval_vector(spline_amp_imag_chan1, interp_freqs, extrapol_zero=True)
+                    ampreal_chan2 = pyspline.spline_eval_vector(spline_amp_real_chan2, interp_freqs, extrapol_zero=True)
+                    ampimag_chan2 = pyspline.spline_eval_vector(spline_amp_imag_chan2, interp_freqs, extrapol_zero=True)
+                    ampreal_chan3 = pyspline.spline_eval_vector(spline_amp_real_chan3, interp_freqs, extrapol_zero=True)
+                    ampimag_chan3 = pyspline.spline_eval_vector(spline_amp_imag_chan3, interp_freqs, extrapol_zero=True)
+                    phase = pyspline.spline_eval_vector(spline_phase, interp_freqs, extrapol_zero=True)
+                    # Get complex values for the TDI freqseries
+                    eiphase = np.exp(1j*phase)
+                    tdi_chan1_vals = (ampreal_chan1 + 1j*ampimag_chan1) * eiphase
+                    tdi_chan2_vals = (ampreal_chan2 + 1j*ampimag_chan2) * eiphase
+                    tdi_chan3_vals = (ampreal_chan3 + 1j*ampimag_chan3) * eiphase
+
+                    #Set waveforms = 0 below fmin.  This should happen elsewhere
+                    tdi_chan1_vals[interp_freqs < f_min] = 0.
+                    tdi_chan2_vals[interp_freqs < f_min] = 0.
+                    tdi_chan3_vals[interp_freqs < f_min] = 0.
+
+
+                    return tdi_chan1_vals, tdi_chan2_vals, tdi_chan3_vals
+
 
 class GetDetectorTimes(object):
     """
@@ -118,6 +191,149 @@ class GetDetectorTimes(object):
             ifo_time = geocent_time + dt
             extrinsic_parameters[f"{ifo.name}_time"] = ifo_time
         sample["extrinsic_parameters"] = extrinsic_parameters
+        return sample
+
+
+class ProjectOntoSpaceDetectors(object):
+    """
+    Project the GW onto the detectors in ifo_list (AET for LISA). This does
+    not sample any new parameters, but relies on the parameters provided in
+    sample['extrinsic_parameters']. Specifically, this transform applies the
+    following operations:
+    
+    Also Changed ProjectOntoDetectors to take lisa_settings as init.  
+    This is a way for me to add extra settings needed for transfer function.
+    
+    Also instead of ifo_list takes detector_type
+
+    (1) Rescale GW amplitudes to account for sampled luminosity distance
+    (2) Generate Transfer function for each detector using the extrinsic parameters
+    (3) Project each mode onto the LISA detectors as T*A*np.exp(1j*phase)
+    (4) Sum modes to get final waveform for each detector
+    
+    """
+
+    def __init__(self, detector_type, domain, ref_time, lisa_settings):
+        self.detector_type = detector_type
+        self.domain = domain
+        self.ref_time = ref_time
+        self.LISAconst = lisa_settings["LISAconst"]
+        self.responseapprox = lisa_settings["responseapprox"]
+        self.frozenLISA = lisa_settings["frozenLISA"]
+        self.TDIrescaled = lisa_settings["TDIrescaled"]
+    
+
+    def __call__(self, input_sample):
+        
+        sample = input_sample.copy()
+        
+        
+        
+        # the line below is required as sample is a shallow copy of
+        # input_sample, and we don't want to modify input_sample
+        parameters = sample["parameters"].copy()
+        extrinsic_parameters = sample["extrinsic_parameters"].copy()
+        
+        try:
+            d_ref = parameters["dist"]
+            d_new = extrinsic_parameters.pop("dist")
+            beta = extrinsic_parameters.pop("beta")
+            inc = extrinsic_parameters.pop("inc")
+            lambd = extrinsic_parameters.pop("lambda")
+            psi = extrinsic_parameters.pop("psi")
+            tc_ref = parameters["geocent_time"]
+            phi = parameters["phi"]
+            assert np.allclose(tc_ref, 0.0), (
+                "This should always be 0. If for some reason "
+                "you want to save time shifted polarizations,"
+                " then remove this assert statement."
+            )
+            tc_new = extrinsic_parameters.pop("geocent_time")
+        except:
+            raise ValueError("Missing parameters.")
+        
+        #Hard Code for now need to confirm this is geocent_time
+        t0=0.
+        arr_len = len(d_new)
+        
+        # (1) rescale polarizations and set distance parameter to sampled value
+        if np.isscalar(d_ref) or np.isscalar(d_new):
+            d_ratio = d_ref / d_new
+        elif isinstance(d_ref, np.ndarray) and isinstance(d_new, np.ndarray):
+            d_ratio = (d_ref / d_new)[:, np.newaxis]
+        else:
+            raise ValueError("luminosity_distance should be a float or a numpy array.")
+        
+        
+        
+        
+        interp_freqs = self.domain.sample_frequencies
+                
+
+        
+        interp_freqs = interp_freqs.astype(np.float64)
+     
+
+        #Everything gets done in a single loop here
+        # 1. Rescale waveform amplitude 
+        # 2. Loop through each waveform and calculate transfer function.  Each transfer function is 
+        #        multiplied with the waveform amplitude to generate a complex and real amplitude.
+        #        PhaseRDelay is also added to phase to address delay from signal arriving at SSB to 
+        #        Signal arriving at LISA detector
+        # 3. Interpolate each part of the signal (Re(A), im(A), phase) for each detector 
+        # 4. compute mode strain as (Re(A) + i*im(A))*exp(i*phase)
+        # 5. Add mode strain to total strain array to create a single waveform as sum of modes.
+        
+        chan1 = np.zeros((arr_len,len(interp_freqs)), dtype=np.complex128)
+        chan2 = np.zeros((arr_len,len(interp_freqs)), dtype=np.complex128)
+        chan3 = np.zeros((arr_len,len(interp_freqs)), dtype=np.complex128)
+        
+        for lm in sample["waveform"].keys():
+
+
+            
+            for i in range(len(d_ratio)): #Scale waveform according to distance
+                
+                sample["waveform"][lm]["amp"][i] = sample["waveform"][lm]["amp"][i]*d_ratio[i] 
+                
+            
+            l = lm[0]
+            m = lm[1]
+            
+            #Calculate Transfer Functions using list comprehension
+            mode_strains = [process_transfer(freq_grid,amp, phase,tf,t0,l,m,inc_,phi_,lambd_, beta_, psi_,interp_freqs,self.domain.f_min,self.detector_type,self.LISAconst, 
+                    self.responseapprox, self.frozenLISA,self.TDIrescaled) for freq_grid,amp,phase, tf, inc_,phi_,lambd_, beta_, psi_ in zip(sample["waveform"][lm]["freq"],sample["waveform"][lm]["amp"],sample["waveform"][lm]["phase"],sample["waveform"][lm]["tf"],inc,phi,lambd,beta,psi)]
+
+            #Probably dont need this but useful for checking
+            sample["waveform"][lm]["Chan1"] = [i[0] for i in mode_strains]
+            sample["waveform"][lm]["Chan2"] = [i[1] for i in mode_strains]
+            sample["waveform"][lm]["Chan3"] = [i[2] for i in mode_strains]
+            
+
+            chan1+=sample["waveform"][lm]["Chan1"]
+            chan2+=sample["waveform"][lm]["Chan2"]
+            chan3+=sample["waveform"][lm]["Chan3"]
+
+       
+        strains = {"chan1": chan1,
+                "chan2": chan2,
+                "chan3":chan3
+        }
+
+        # Add extrinsic parameters corresponding to the transformations
+        # applied in the loop above to parameters. These have all been popped off of
+        # extrinsic_parameters, so they only live one place.
+        parameters["inc"] = inc
+        parameters["beta"] = beta
+        parameters["lambda"] = lambd
+        parameters["psi"] = psi
+        parameters["geocent_time"] = tc_new
+        parameters["dist"] = d_new
+     
+        sample["waveform"] = strains
+        sample["parameters"] = parameters
+        sample["extrinsic_parameters"] = extrinsic_parameters
+        
         return sample
 
 

@@ -12,6 +12,8 @@ import yaml
 from bilby.gw.prior import BBHPriorDict
 from threadpoolctl import threadpool_limits
 from torchvision.transforms import Compose
+import lisabeta.lisa.pyresponse as pyresponse
+import lisabeta.tools.pyspline as pyspline
 
 from dingo.gw.dataset.waveform_dataset import WaveformDataset
 from dingo.gw.domains import build_domain
@@ -46,14 +48,14 @@ def generate_parameters_and_waveforms(
     Returns
     -------
     pandas DataFrame of parameters
-    dictionary of numpy arrays corresponding to waveform dictionary.  
+    dictionary of numpy arrays corresponding to waveform polarizations
     """
     print("Generating dataset of size " + str(num_samples))
     parameters = pd.DataFrame(prior.sample(num_samples))
     
     if isinstance(waveform_generator, LISAWaveformGenerator):
     
-        #Rename parameters to be consistent wit lisabeta code
+    
         parameters = parameters.rename(columns = {"chirp_mass":"Mchirp", "mass_ratio":"q","chi_1":"chi1","chi_2":"chi2"})
 
     if num_processes > 1:
@@ -64,8 +66,8 @@ def generate_parameters_and_waveforms(
                 )
     else:
         waveforms = generate_waveforms_parallel(waveform_generator, parameters)
-
-    #This section commented out for now.  Need to add back later.
+    
+    #This section is commented out for now.  Need to add back later.
     '''
     wf_failed = np.any(np.isnan(polarizations["h_plus"]), axis=1)
     if wf_failed.any():
@@ -172,7 +174,7 @@ def generate_dataset(settings: Dict, num_processes: int) -> WaveformDataset:
             domain=domain,
             **settings["waveform_generator"],
         )
-    #We add ne flag to check if LISA waveforms being analyzed
+    #We add new flag to check if LISA waveforms being analyzed
     elif LISA_flag:
         waveform_generator = LISAWaveformGenerator(
             domain=domain,

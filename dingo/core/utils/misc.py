@@ -117,18 +117,21 @@ def call_func_strict_output_dim(
 
     # truncating the final output to the correct size
     for i, iterable in enumerate(final_output):
+        
         if isinstance(iterable, np.ndarray):
             final_output[i] = iterable[:true_num_request]
 
         if isinstance(iterable, pd.DataFrame):
             final_output[i] = iterable.iloc[:true_num_request]
-
+        
+        
         #For LIGO polarizations we have dict keys h_plus and h_cross and 
         #value is just an array stack.  With LISA needing to save the modes we 
         #Have another sublayer to deal with that is a dict.  This new structure acounts for LISA 
         #Waveforms in the case of a subdict for all the modes. otherwise retains the old structure.
         if isinstance(iterable, dict):
             for key, value in iterable.items():
+                
                 if isinstance(value, dict):
                     final_output[i][key] = {
                     subkey: subval[:true_num_request]
@@ -136,5 +139,8 @@ def call_func_strict_output_dim(
                 }
                 else:
                     final_output[i][key] = value[:true_num_request]
+
+
+
 
     return final_output

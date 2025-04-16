@@ -3,7 +3,8 @@ import h5py
 import numpy as np
 import torch.utils.data
 from torchvision.transforms import Compose
-
+import lisabeta.lisa.pyresponse as pyresponse
+import lisabeta.tools.pyspline as pyspline
 from dingo.core.dataset import DingoDataset, recursive_hdf5_load
 from dingo.gw.SVD import SVDBasis, ApplySVD
 from dingo.gw.domains import build_domain

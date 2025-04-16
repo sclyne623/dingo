@@ -1524,55 +1524,61 @@ def generate_waveforms_task_func(
 
 
 def generate_waveforms_parallel(
-    waveform_generator: WaveformGenerator,
-    parameter_samples: pd.DataFrame,
-    pool: Pool = None,
-) -> Dict[str, np.ndarray]:
-    """ 
-    Generate a waveform dataset, optionally in parallel.
+     waveform_generator: WaveformGenerator,
+     parameter_samples: pd.DataFrame,
+     pool: Pool = None,
+ ) -> Dict[str, np.ndarray]:
 
-    Parameters
-    ----------
-    waveform_generator: WaveformGenerator
-        A WaveformGenerator instance
-    parameter_samples: pd.DataFrame
-        Intrinsic parameter samples
-    pool: multiprocessing.Pool
-        Optional pool of workers for parallel generation
-
-    Returns
-    -------
-    polarizations:
-        A dictionary of all generated polarizations stacked together
     """
-    # logger.info('Generating waveform polarizations ...')
+     
+     Generate a waveform dataset, optionally in parallel.
 
+     Parameters
+     ----------
+     waveform_generator: WaveformGenerator
+         A WaveformGenerator instance
+     parameter_samples: pd.DataFrame
+         Intrinsic parameter samples
+     pool: multiprocessing.Pool
+         Optional pool of workers for parallel generation
+ 
+     Returns
+     -------
+     polarizations:
+         A dictionary of all generated polarizations stacked together
+     """
+     # logger.info('Generating waveform polarizations ...')
+ 
     task_func = partial(
-        generate_waveforms_task_func, waveform_generator=waveform_generator
+         generate_waveforms_task_func, waveform_generator=waveform_generator
     )
     task_data = parameter_samples.iterrows()
-
+ 
     if pool is not None:
         waveform_dict_list = pool.map(task_func, task_data)
     else:
         waveform_dict_list = list(map(task_func, task_data))
 
-    #This try statement checks whether waveforms are LIGO or LISA.  The coarse waveforms
-    #with LISA need not be the same length which would cause an error with np.stack.  So if
-    #The waveform are LISA is creates a list instead of an array.
-    try:
-        waveform_dict = {
-            pol: np.stack([wf[pol] for wf in waveform_dict_list])
-            for pol in waveform_dict_list[0].keys()
-        }
-    except: 
+    
+    #Adds support for lisabeta waveform structure.  for LIGO we get a stack of 
+    #arrays in a dict for h_plus and h_cross.  Here we adopt a similar structure 
+    #with an extra dict layer.  Keys are modes and for each key we get a dict 
+    #of freq arrays, amp arrays, phase arrays, and tf arrays.
+    if isinstance(waveform_generator, LISAWaveformGenerator):
         waveform_dict = {
         pol: {
             key: [wf[pol][key] for wf in waveform_dict_list]
             for key in waveform_dict_list[0][pol].keys()
         }
         for pol in waveform_dict_list[0].keys()
-        }    
+        }
+    else: 
+        
+        waveform_dict = {
+            pol: np.stack([wf[pol] for wf in waveform_dict_list])
+            for pol in waveform_dict_list[0].keys()
+        }
+
     return waveform_dict
 
 
