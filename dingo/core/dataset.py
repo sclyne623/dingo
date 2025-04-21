@@ -29,8 +29,8 @@ def recursive_hdf5_save(group, d):
             # TODO: Set scalars as attributes?
                 group.create_dataset(k, data=v)
             except:
-                dt = h5py.special_dtype(vlen=np.int64)
-                group.create_dataset(k, (len(v),), dtype=dt)
+                dt = h5py.special_dtype(vlen=np.float64) 
+                group.create_dataset(k, data = v, dtype=dt)
         else:
             raise TypeError(f"Cannot save datatype {type(v)} as hdf5 dataset.")
 
