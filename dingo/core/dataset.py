@@ -12,7 +12,11 @@ def recursive_hdf5_save(group, d):
         if v is None:
             continue
         elif isinstance(v, dict):
-            next_group = group.create_group(k)
+            #LISA dataset has mode tuples as keys.  Sets these to strings
+            try:
+                next_group = group.create_group(k)
+            except:
+                next_group = group.create_group(str(k))
             recursive_hdf5_save(next_group, v)
         elif isinstance(v, np.ndarray):
             group.create_dataset(k, data=v)
