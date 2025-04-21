@@ -24,7 +24,13 @@ def recursive_hdf5_save(group, d):
             group.create_dataset(k, data=v.to_records(index=False))
         elif isinstance(v, (int, float, str, list)):
             # TODO: Set scalars as attributes?
-            group.create_dataset(k, data=v)
+            #LISA data not uniform length need workaround
+            try:
+            # TODO: Set scalars as attributes?
+                group.create_dataset(k, data=v)
+            except:
+                dt = h5py.special_dtype(vlen=np.int64)
+                group.create_dataset(k, (len(v),), dtype=dt)
         else:
             raise TypeError(f"Cannot save datatype {type(v)} as hdf5 dataset.")
 
