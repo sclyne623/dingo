@@ -53,6 +53,7 @@ def recursive_hdf5_load(
     """
     d = {}
     for k, v in group.items():
+        
         if keys is None or k in keys:
             if isinstance(v, h5py.Group):
                 d[k] = recursive_hdf5_load(v, idx=idx)
@@ -84,7 +85,7 @@ def recursive_hdf5_load(
                 # If an array is 1D and of type object, assume it originated as a list
                 # of strings.
                 elif d[k].ndim == 1 and d[k].dtype == "O":
-                    d[k] = [x.decode() for x in d[k]]
+                    d[k] = [x.decode() if isinstance(x, bytes) else x for x in d[k]]
     return d
 
 
