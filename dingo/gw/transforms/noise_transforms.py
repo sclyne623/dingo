@@ -148,6 +148,7 @@ class WhitenAndScaleStrain(object):
                 f"Detectors of strain data, {ifos}, do not match "
                 f'those of asds, {sample["asds"].keys()}.'
             )
+        
         whitened_strains = {
             ifo: sample["waveform"][ifo] / (sample["asds"][ifo] * self.scale_factor)
             for ifo in ifos

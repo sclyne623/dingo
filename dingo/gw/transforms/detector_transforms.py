@@ -10,6 +10,7 @@ from bilby.gw.prior import CalibrationPriorDict
 
 import lisabeta.lisa.pyresponse as pyresponse
 import lisabeta.tools.pyspline as pyspline
+import ast
 
 
 CC = 299792458.0
@@ -98,6 +99,7 @@ def process_transfer(freq_grid,amp,phase,tf,t0,l,m,inc,phi,lambd, beta, psi,inte
                      likes 1D arrays, so that part gets broken out here.  Currently needs f_min argument that should be addressed
                      elsewhere.
                     """
+                    
                     
                     #Class called for each waveform dependent on extrinsic parameters 
                     #Also where detector settings are added
@@ -226,6 +228,10 @@ class ProjectOntoSpaceDetectors(object):
     def __call__(self, input_sample):
         
         sample = input_sample.copy()
+        for lm in sample["waveform"].keys():
+            l = lm[0]
+            m = lm[1]
+            
         
         
         
@@ -289,25 +295,47 @@ class ProjectOntoSpaceDetectors(object):
         chan3 = np.zeros((arr_len,len(interp_freqs)), dtype=np.complex128)
         
         for lm in sample["waveform"].keys():
+            l, m = ast.literal_eval(lm)
 
-
-            
-            for i in range(len(d_ratio)): #Scale waveform according to distance
+            if len(d_ratio) ==1:
+                sample["waveform"][lm]["amp"]=sample["waveform"][lm]["amp"]*d_ratio
+            else:
+                for i in range(len(d_ratio)): #Scale waveform according to distance
                 
-                sample["waveform"][lm]["amp"][i] = sample["waveform"][lm]["amp"][i]*d_ratio[i] 
+                    sample["waveform"][lm]["amp"][i] = sample["waveform"][lm]["amp"][i]*d_ratio[i] 
                 
             
-            l = lm[0]
-            m = lm[1]
-            
-            #Calculate Transfer Functions using list comprehension
-            mode_strains = [process_transfer(freq_grid,amp, phase,tf,t0,l,m,inc_,phi_,lambd_, beta_, psi_,interp_freqs,self.domain.f_min,self.detector_type,self.LISAconst, 
-                    self.responseapprox, self.frozenLISA,self.TDIrescaled) for freq_grid,amp,phase, tf, inc_,phi_,lambd_, beta_, psi_ in zip(sample["waveform"][lm]["freq"],sample["waveform"][lm]["amp"],sample["waveform"][lm]["phase"],sample["waveform"][lm]["tf"],inc,phi,lambd,beta,psi)]
+            #l = lm[0]
+            #m = lm[1]
 
-            #Probably dont need this but useful for checking
-            sample["waveform"][lm]["Chan1"] = [i[0] for i in mode_strains]
-            sample["waveform"][lm]["Chan2"] = [i[1] for i in mode_strains]
-            sample["waveform"][lm]["Chan3"] = [i[2] for i in mode_strains]
+            #seperate workflows for single vs batched waveform
+            if any(len(np.array(x)) == 1 for x in [inc,phi,lambd,beta]):
+                freq_grid = sample["waveform"][lm]["freq"]
+                amp = sample["waveform"][lm]["amp"][0]
+                phase = sample["waveform"][lm]["phase"]
+                #print("phase",phase)
+                if isinstance(sample["waveform"][lm]["tf"], tuple):
+                    tf = np.array(sample["waveform"][lm]["tf"][0])
+                else:
+                    tf = sample["waveform"][lm]["tf"]
+                
+
+                
+                chan1,chan2,chan3  = process_transfer(freq_grid,amp, phase,tf,t0,l,m,inc[0],phi[0],lambd[0], beta[0], psi[0],interp_freqs,self.domain.f_min,self.detector_type,self.LISAconst, 
+                    self.responseapprox, self.frozenLISA,self.TDIrescaled)
+                sample["waveform"][lm]["Chan1"] = chan1
+                sample["waveform"][lm]["Chan2"] = chan2
+                sample["waveform"][lm]["Chan3"] = chan3
+            else:
+            
+                #Calculate Transfer Functions using list comprehension
+                mode_strains = [process_transfer(freq_grid,amp, phase,tf,t0,l,m,inc_,phi_,lambd_, beta_, psi_,interp_freqs,self.domain.f_min,self.detector_type,self.LISAconst, 
+                        self.responseapprox, self.frozenLISA,self.TDIrescaled) for freq_grid,amp,phase, tf, inc_,phi_,lambd_, beta_, psi_ in zip(sample["waveform"][lm]["freq"],sample["waveform"][lm]["amp"],sample["waveform"][lm]["phase"],sample["waveform"][lm]["tf"],inc,phi,lambd,beta,psi)]
+
+                #Probably dont need this but useful for checking
+                sample["waveform"][lm]["Chan1"] = [i[0] for i in mode_strains]
+                sample["waveform"][lm]["Chan2"] = [i[1] for i in mode_strains]
+                sample["waveform"][lm]["Chan3"] = [i[2] for i in mode_strains]
             
 
             chan1+=sample["waveform"][lm]["Chan1"]
@@ -388,6 +416,7 @@ class ProjectOntoDetectors(object):
         hc = sample["waveform"]["h_cross"] * d_ratio
         hp = sample["waveform"]["h_plus"] * d_ratio
         parameters["luminosity_distance"] = d_new
+        
 
         strains = {}
         for ifo in self.ifo_list:

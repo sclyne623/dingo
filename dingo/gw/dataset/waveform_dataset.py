@@ -121,7 +121,10 @@ class WaveformDataset(DingoDataset, torch.utils.data.Dataset):
                 self.parameters = self.parameters.astype(self.real_type, copy=False)
             if self.polarizations is not None:
                 for k, v in self.polarizations.items():
-                    self.polarizations[k] = v.astype(self.complex_type, copy=False)
+                    if lisa_flag == False:
+                        self.polarizations[k] = v.astype(self.complex_type, copy=False)
+                    else:
+                        self.polarizations[k] = v
 
             # This should probably be moved to the SVDBasis class.
             if self.svd is not None:
@@ -300,10 +303,19 @@ class WaveformDataset(DingoDataset, torch.utils.data.Dataset):
             )["polarizations"]
             # Apply domain update to set waveform to zero for f < f_min
             if self.svd is None:
-                polarizations = {
-                    pol: self.domain.update_data(waveforms)
-                    for pol, waveforms in polarizations.items()
-                }
+                try:
+                    polarizations = {
+                        pol: self.domain.update_data(waveforms)
+                        for pol, waveforms in polarizations.items()
+                    }
+                except:
+                    polarizations_ = {
+                        pol: {
+                            key: value
+                            for key, value in subdict.items()
+                        }
+                        for pol, subdict in polarizations.items()
+                    }
             parameters = {
                 k: v if isinstance(v, float) else v.to_numpy()
                 for k, v in self.parameters.iloc[batched_idx].items()
@@ -312,11 +324,21 @@ class WaveformDataset(DingoDataset, torch.utils.data.Dataset):
             if not isinstance(parameters, dict):
                 parameters = parameters.to_dict()
             # Update precision
-            if self.precision is not None:
-                polarizations = {
-                    k: v.astype(self.complex_type, copy=False)
-                    for k, v in polarizations.items()
-                }
+            try:
+                if self.precision is not None:
+                    polarizations = {
+                        k: v.astype(self.complex_type, copy=False)
+                        for k, v in polarizations.items()
+                    }
+            except:
+                if self.precision is not None:
+                    polarizations = {
+                        pol: {
+                            key: arr
+                            for key, arr in subdict.items()
+                        }
+                        for pol, subdict in polarizations.items()
+                    }
             # Perform SVD size update on waveform
             if self.svd is not None and self.svd_size_update is not None:
                 for k, v in polarizations.items():

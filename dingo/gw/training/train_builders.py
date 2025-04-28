@@ -12,6 +12,7 @@ from dingo.gw.dataset.waveform_dataset import WaveformDataset
 from dingo.gw.domains import build_domain
 from dingo.gw.transforms import (
     ProjectOntoDetectors,
+    ProjectOntoSpaceDetectors,
     SampleNoiseASD,
     WhitenAndScaleStrain,
     AddWhiteNoiseComplex,
@@ -112,13 +113,22 @@ def set_train_transforms(wfd, data_settings, asd_dataset_path, omit_transforms=N
 
     ref_time = data_settings["ref_time"]
     # Build detector objects
-    ifo_list = InterferometerList(data_settings["detectors"])
 
-    # Build transforms.
-    transforms = [
+    #Needs to be a check later
+    if data_settings["detector_type"] != "LISA":
+        ifo_list = InterferometerList(data_settings["detectors"])
+        transforms = [
         SampleExtrinsicParameters(extrinsic_prior_dict),
         GetDetectorTimes(ifo_list, ref_time),
     ]
+    else:
+         transforms = [SampleExtrinsicParameters(extrinsic_prior_dict)]
+
+
+    # Build transforms.
+
+
+    
 
     extra_context_parameters = []
     if "gnpe_time_shifts" in data_settings:
@@ -160,8 +170,10 @@ def set_train_transforms(wfd, data_settings, asd_dataset_path, omit_transforms=N
             torchvision.transforms.Compose(transforms),
         )
         data_settings["standardization"] = standardization_dict
-
-    transforms.append(ProjectOntoDetectors(ifo_list, domain, ref_time))
+    if data_settings["detector_type"] == "LISA":
+        transforms.append(ProjectOntoSpaceDetectors("TDIAET",domain, ref_time,data_settings["lisa_settings"])) #Hard Coded need to change
+    else:
+        transforms.append(ProjectOntoDetectors(ifo_list, domain, ref_time))
     transforms.append(SampleNoiseASD(asd_dataset))
     transforms.append(WhitenAndScaleStrain(domain.noise_std))
     # We typically add white detector noise. For debugging purposes, this can be turned
