@@ -310,6 +310,7 @@ class ProjectOntoSpaceDetectors(object):
 
             #seperate workflows for single vs batched waveform
             if any(len(np.array(x)) == 1 for x in [inc,phi,lambd,beta]):
+                
                 freq_grid = sample["waveform"][lm]["freq"]
                 amp = sample["waveform"][lm]["amp"][0]
                 phase = sample["waveform"][lm]["phase"]
@@ -321,11 +322,12 @@ class ProjectOntoSpaceDetectors(object):
                 
 
                 
-                chan1,chan2,chan3  = process_transfer(freq_grid,amp, phase,tf,t0,l,m,inc[0],phi[0],lambd[0], beta[0], psi[0],interp_freqs,self.domain.f_min,self.detector_type,self.LISAconst, 
+                chan1_mode,chan2_mode,chan3_mode  = process_transfer(freq_grid,amp, phase,tf,t0,l,m,inc[0],phi[0],lambd[0], beta[0], psi[0],interp_freqs,self.domain.f_min,self.detector_type,self.LISAconst, 
                     self.responseapprox, self.frozenLISA,self.TDIrescaled)
-                sample["waveform"][lm]["Chan1"] = chan1
-                sample["waveform"][lm]["Chan2"] = chan2
-                sample["waveform"][lm]["Chan3"] = chan3
+                
+                sample["waveform"][lm]["Chan1"] = chan1_mode
+                sample["waveform"][lm]["Chan2"] = chan2_mode
+                sample["waveform"][lm]["Chan3"] = chan3_mode
             else:
             
                 #Calculate Transfer Functions using list comprehension
