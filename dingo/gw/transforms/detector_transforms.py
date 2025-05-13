@@ -244,7 +244,7 @@ class ProjectOntoSpaceDetectors(object):
             d_ref = parameters["dist"]
             d_new = extrinsic_parameters.pop("dist")
             beta = extrinsic_parameters.pop("beta")
-            inc = extrinsic_parameters.pop("inc")
+            inc = parameters["inc"]
             lambd = extrinsic_parameters.pop("lambda")
             psi = extrinsic_parameters.pop("psi")
             tc_ref = parameters["geocent_time"]
