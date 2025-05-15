@@ -367,7 +367,7 @@ class Result(DingoDataset):
             self.samples["weights"] = weights
 
             #This section does the new IS method.  Assigns k_hat as diagnostic.
-            log_weights_smoothed, k_hat = psislw(log_weights)
+            log_weights_smoothed, k_hat = psislw(np.array(log_weights))
             weights_smoothed = np.exp(log_weights_smoothed - np.max(log_weights_smoothed))
             weights_smoothed /= np.mean(weights_smoothed)
             self.samples["weights_smoothed"] = weights_smoothed
