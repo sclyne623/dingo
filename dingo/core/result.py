@@ -17,6 +17,8 @@ from dingo.core.density import train_unconditional_density_estimator
 from dingo.core.utils.misc import recursive_check_dicts_are_equal
 from dingo.core.utils.plotting import plot_corner_multi
 
+from arviz.stats.stats import psislw #For pareto smoothing
+
 DATA_KEYS = [
     "samples",
     "context",
@@ -358,11 +360,18 @@ class Result(DingoDataset):
                 # phase
             )
             self.log_evidence = logsumexp(log_weights) - np.log(self.num_samples)
-
+            
             # Save the *normalized* weights.
             weights = np.exp(log_weights - np.max(log_weights))
             weights /= np.mean(weights)
             self.samples["weights"] = weights
+
+            #This section does the new IS method.  Assigns k_hat as diagnostic.
+            log_weights_smoothed, k_hat = psislw(log_weights)
+            weights_smoothed = np.exp(log_weights_smoothed - np.max(log_weights_smoothed))
+            weights_smoothed /= np.mean(weights_smoothed)
+            self.samples["weights_smoothed"] = weights_smoothed
+            self.k_hat = k_hat
 
     def sampling_importance_resampling(self, num_samples=None, random_state=None):
         """
