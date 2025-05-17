@@ -12,6 +12,9 @@ import lisabeta.lisa.pyresponse as pyresponse
 import lisabeta.tools.pyspline as pyspline
 import ast
 
+import os
+
+
 
 CC = 299792458.0
 
@@ -92,6 +95,8 @@ def time_delay_from_geocenter(
             + (detector_2[2] - detector_1[2]) * costheta
         ) / CC
 
+
+
 def process_transfer(freq_grid,amp,phase,tf,t0,l,m,inc,phi,lambd, beta, psi,interp_freqs,f_min,detector_type,LISAconst, 
                     responseapprox, frozenLISA,TDIrescaled):
                     """helper function for the ProjectontoSpaceDetector class.  The class is designed to work with a
@@ -103,6 +108,7 @@ def process_transfer(freq_grid,amp,phase,tf,t0,l,m,inc,phi,lambd, beta, psi,inte
                     
                     #Class called for each waveform dependent on extrinsic parameters 
                     #Also where detector settings are added
+                    
                     tdiClass = pyresponse.LISAFDresponseTDI3Chan(freq_grid, tf, 
                                                          t0, l, m, inc, phi, lambd, beta, psi, 
                                                          detector_type,LISAconst, responseapprox, frozenLISA, 
@@ -160,6 +166,7 @@ def process_transfer(freq_grid,amp,phase,tf,t0,l,m,inc,phi,lambd, beta, psi,inte
                     tdi_chan2_vals[interp_freqs < f_min] = 0.
                     tdi_chan3_vals[interp_freqs < f_min] = 0.
 
+                   
 
                     return tdi_chan1_vals, tdi_chan2_vals, tdi_chan3_vals
 
@@ -295,6 +302,7 @@ class ProjectOntoSpaceDetectors(object):
         chan3 = np.zeros((arr_len,len(interp_freqs)), dtype=np.complex128)
         
         for lm in sample["waveform"].keys():
+            
             l, m = ast.literal_eval(lm)
 
             if len(d_ratio) ==1:
@@ -329,26 +337,35 @@ class ProjectOntoSpaceDetectors(object):
                 sample["waveform"][lm]["Chan2"] = chan2_mode
                 sample["waveform"][lm]["Chan3"] = chan3_mode
             else:
+                
             
                 #Calculate Transfer Functions using list comprehension
                 mode_strains = [process_transfer(freq_grid,amp, phase,tf,t0,l,m,inc_,phi_,lambd_, beta_, psi_,interp_freqs,self.domain.f_min,self.detector_type,self.LISAconst, 
                         self.responseapprox, self.frozenLISA,self.TDIrescaled) for freq_grid,amp,phase, tf, inc_,phi_,lambd_, beta_, psi_ in zip(sample["waveform"][lm]["freq"],sample["waveform"][lm]["amp"],sample["waveform"][lm]["phase"],sample["waveform"][lm]["tf"],inc,phi,lambd,beta,psi)]
 
                 #Probably dont need this but useful for checking
-                sample["waveform"][lm]["Chan1"] = [i[0] for i in mode_strains]
-                sample["waveform"][lm]["Chan2"] = [i[1] for i in mode_strains]
-                sample["waveform"][lm]["Chan3"] = [i[2] for i in mode_strains]
+                chan1_mode = np.stack([i[0] for i in mode_strains], axis=0)
+                chan2_mode = np.stack([i[1] for i in mode_strains], axis=0)
+                chan3_mode = np.stack([i[2] for i in mode_strains], axis=0)
             
+            
+            
+            chan1+=chan1_mode
+            chan2+=chan2_mode
+            chan3+=chan3_mode
 
-            chan1+=sample["waveform"][lm]["Chan1"]
-            chan2+=sample["waveform"][lm]["Chan2"]
-            chan3+=sample["waveform"][lm]["Chan3"]
+            del mode_strains
+            del chan1_mode
+            del chan2_mode
+            del chan3_mode
 
        
         strains = {"chan1": chan1,
                 "chan2": chan2,
                 "chan3":chan3
         }
+
+        
 
         # Add extrinsic parameters corresponding to the transformations
         # applied in the loop above to parameters. These have all been popped off of
