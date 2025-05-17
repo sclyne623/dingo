@@ -327,7 +327,7 @@ class ProjectOntoSpaceDetectors(object):
                 if isinstance(sample["waveform"][lm]["tf"], tuple):
                     tf = np.array(sample["waveform"][lm]["tf"][0])
                 else:
-                    tf = sample["waveform"][lm]["tf"]
+                    tf = np.asarray(sample["waveform"][lm]["tf"]).ravel()
                 
 
                 
