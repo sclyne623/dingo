@@ -320,6 +320,7 @@ class ProjectOntoSpaceDetectors(object):
             if any(len(np.array(x)) == 1 for x in [inc,phi,lambd,beta]):
                 
                 freq_grid = sample["waveform"][lm]["freq"]
+                freq_grid = np.asarray(freq_grid).ravel()
                 amp = sample["waveform"][lm]["amp"][0]
                 phase = sample["waveform"][lm]["phase"]
                 #print("phase",phase)
