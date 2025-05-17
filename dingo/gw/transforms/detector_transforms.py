@@ -347,6 +347,7 @@ class ProjectOntoSpaceDetectors(object):
                 chan1_mode = np.stack([i[0] for i in mode_strains], axis=0)
                 chan2_mode = np.stack([i[1] for i in mode_strains], axis=0)
                 chan3_mode = np.stack([i[2] for i in mode_strains], axis=0)
+                del mode_strains
             
             
             
@@ -354,7 +355,7 @@ class ProjectOntoSpaceDetectors(object):
             chan2+=chan2_mode
             chan3+=chan3_mode
 
-            del mode_strains
+            
             del chan1_mode
             del chan2_mode
             del chan3_mode
