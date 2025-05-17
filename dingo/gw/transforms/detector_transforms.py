@@ -321,13 +321,18 @@ class ProjectOntoSpaceDetectors(object):
                 
                 freq_grid = sample["waveform"][lm]["freq"]
                 freq_grid = np.asarray(freq_grid).ravel()
-                amp = sample["waveform"][lm]["amp"][0]
-                phase = sample["waveform"][lm]["phase"]
+                amp = np.asarray(sample["waveform"][lm]["amp"]).ravel()
+                phase = np.asarray(sample["waveform"][lm]["phase"]).ravel()
                 #print("phase",phase)
                 if isinstance(sample["waveform"][lm]["tf"], tuple):
                     tf = np.array(sample["waveform"][lm]["tf"][0])
                 else:
                     tf = np.asarray(sample["waveform"][lm]["tf"]).ravel()
+                
+                
+                
+                
+                
                 
 
                 
