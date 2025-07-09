@@ -164,7 +164,8 @@ class DingoDataset:
                 assert k in self._data_keys
                 setattr(self, k, v)
             try:
-                self.settings = ast.literal_eval(f.attrs["settings"])
+                #self.settings = ast.literal_eval(f.attrs["settings"])
+                self.settings = f.attrs["settings"]
             except KeyError:
                 self.settings = None  # Is this necessary?
 
