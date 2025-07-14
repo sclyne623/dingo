@@ -108,6 +108,7 @@ class SamplingInput(Input):
         self._load_sampler()
 
     def _load_event(self):
+        print("Event Dataset File: ", self.event_data_file)
         event_dataset = EventDataset(file_name=self.event_data_file)
         self.context = event_dataset.data
         self.event_metadata = event_dataset.settings
