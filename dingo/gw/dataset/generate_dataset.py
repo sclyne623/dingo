@@ -89,6 +89,60 @@ def generate_parameters_and_waveforms(
     
     return parameters, waveforms
 
+def generate_parameters(
+    waveform_generator: WaveformGenerator,
+    prior: BBHPriorDict,
+    num_samples: int,
+    num_processes: int,
+) -> Tuple[pd.DataFrame, Dict[str, np.ndarray]]:
+    """
+    Generate a dataset of just parameters drawn from the prior. This is used currently for LISA
+    where waveforms are too expensive right now.  This hybridizes the waveform generation by
+    saving parameters on disk without waveforms, which get generated at train time.
+
+    Parameters
+    ----------
+    waveform_generator : WaveformGenerator
+    prior : Prior
+    num_samples : int
+    num_processes : int
+
+    Returns
+    -------
+    pandas DataFrame of parameters
+    dictionary of numpy arrays corresponding to waveform polarizations
+    """
+    print("Generating dataset of size " + str(num_samples))
+    parameters = pd.DataFrame(prior.sample(num_samples))
+    
+    if isinstance(waveform_generator, LISAWaveformGenerator):
+    
+    
+        parameters = parameters.rename(columns = {"chirp_mass":"Mchirp", "mass_ratio":"q","chi_1":"chi1","chi_2":"chi2"})
+
+    
+    #This section is commented out for now.  Need to add back later.
+    '''
+    wf_failed = np.any(np.isnan(polarizations["h_plus"]), axis=1)
+    if wf_failed.any():
+        idx_failed = np.where(wf_failed)[0]
+        idx_ok = np.where(~wf_failed)[0]
+        polarizations_ok = {k: v[idx_ok] for k, v in polarizations.items()}
+        parameters_ok = parameters.iloc[idx_ok]
+        failed_percent = 100 * len(idx_failed) / len(parameters)
+        print(
+            f"{len(idx_failed)} out of {len(parameters)} configuration ({failed_percent:.1f}%) failed to generate."
+        )
+        with pd.option_context("display.max_rows", None, "display.max_columns", None):
+            print(parameters.iloc[idx_failed])
+        print(
+            f"Only returning the {len(idx_ok)} successfully generated configurations."
+        )
+        return parameters_ok, polarizations_ok
+    '''
+    
+    return parameters
+
 def train_svd_basis(dataset: WaveformDataset, size: int, n_train: int):
     """
     Train (and optionally validate) an SVD basis.
@@ -250,20 +304,24 @@ def generate_dataset(settings: Dict, num_processes: int) -> WaveformDataset:
             dataset_dict["svd"] = basis.to_dictionary()
 
         waveform_generator.transform = Compose(compression_transforms)
+    if settings["waveform_generator"].get("on_fly", True): #change logic here for on the fly
+        parameters = generate_parameters(waveform_generator,prior,settings["num_samples"],num_processes)
+        dataset_dict["parameters"] = parameters
+    else:
 
-    func = partial(
-        generate_parameters_and_waveforms,
-        waveform_generator,
-        prior,
-        num_processes=num_processes,
-    )
-    parameters, waveforms = call_func_strict_output_dim(
-        func, settings["num_samples"]
-    )
-    dataset_dict["parameters"] = parameters
-    #need to change the WaveformDataset object to have waveform_dict instead of polarizations
-    #Then this line needs to change
-    dataset_dict["polarizations"] = waveforms 
+        func = partial(
+            generate_parameters_and_waveforms,
+            waveform_generator,
+            prior,
+            num_processes=num_processes,
+        )
+        parameters, waveforms = call_func_strict_output_dim(
+            func, settings["num_samples"]
+        )
+        dataset_dict["parameters"] = parameters
+        #need to change the WaveformDataset object to have waveform_dict instead of polarizations
+        #Then this line needs to change
+        dataset_dict["polarizations"] = waveforms 
 
     dataset_dict[settings["num_samples"]] = len(parameters)
     dataset = WaveformDataset(dictionary=dataset_dict)

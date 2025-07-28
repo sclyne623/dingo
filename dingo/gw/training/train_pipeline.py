@@ -1,6 +1,9 @@
 from typing import Optional, Tuple
 import os
 
+from typing import Optional, Tuple
+import os
+
 import numpy as np
 import yaml
 import argparse
@@ -111,6 +114,7 @@ def prepare_training_new(
     wfd = build_dataset(
         data_settings=data_settings,
         leave_waveforms_on_disk=local_settings.get("leave_waveforms_on_disk", True),
+        on_fly=local_settings.get("on_fly", True),
     )  # No transforms yet
     initial_weights = {}
 
@@ -211,6 +215,7 @@ def prepare_training_resume(
     wfd = build_dataset(
         data_settings=data_settings,
         leave_waveforms_on_disk=local_settings.get("leave_waveforms_on_disk", True),
+        on_fly=local_settings.get("on_fly", True),
     )
 
     if local_settings.get("wandb", False):

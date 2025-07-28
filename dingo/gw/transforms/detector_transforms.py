@@ -247,6 +247,14 @@ class ProjectOntoSpaceDetectors(object):
         parameters = sample["parameters"].copy()
         extrinsic_parameters = sample["extrinsic_parameters"].copy()
         
+        #If statements handle injections.  Can be handled way better
+        if "inc" not in parameters.keys():
+            parameters["inc"] = extrinsic_parameters["inc"]
+        if "geocent_time" not in parameters.keys():
+            parameters["geocent_time"] = extrinsic_parameters["geocent_time"]
+        if "phi" not in parameters.keys():
+            parameters["phi"] = extrinsic_parameters["phi"]
+            
         try:
             d_ref = parameters["dist"]
             d_new = extrinsic_parameters.pop("dist")
@@ -266,14 +274,15 @@ class ProjectOntoSpaceDetectors(object):
             raise ValueError("Missing parameters.")
         
         #Hard Code for now need to confirm this is geocent_time
-        t0=0.
-        arr_len = len(d_new)
+        t0=1735300818.
+        
         
         # (1) rescale polarizations and set distance parameter to sampled value
         if np.isscalar(d_ref) or np.isscalar(d_new):
             d_ratio = d_ref / d_new
         elif isinstance(d_ref, np.ndarray) and isinstance(d_new, np.ndarray):
             d_ratio = (d_ref / d_new)[:, np.newaxis]
+            arr_len = len(d_new)
         else:
             raise ValueError("luminosity_distance should be a float or a numpy array.")
         
@@ -296,28 +305,38 @@ class ProjectOntoSpaceDetectors(object):
         # 3. Interpolate each part of the signal (Re(A), im(A), phase) for each detector 
         # 4. compute mode strain as (Re(A) + i*im(A))*exp(i*phase)
         # 5. Add mode strain to total strain array to create a single waveform as sum of modes.
-        
-        chan1 = np.zeros((arr_len,len(interp_freqs)), dtype=np.complex128)
-        chan2 = np.zeros((arr_len,len(interp_freqs)), dtype=np.complex128)
-        chan3 = np.zeros((arr_len,len(interp_freqs)), dtype=np.complex128)
+
+        #Makes chan1,2,3 1D arrays if d_new is scalar.  Must be better way.
+        if np.isscalar(d_new):
+            chan1 = np.zeros(len(interp_freqs),dtype = np.complex128)
+            chan2 = np.zeros(len(interp_freqs), dtype=np.complex128)
+            chan3 = np.zeros(len(interp_freqs), dtype=np.complex128)
+        else:        
+            chan1 = np.zeros((arr_len,len(interp_freqs)), dtype=np.complex128)
+            chan2 = np.zeros((arr_len,len(interp_freqs)), dtype=np.complex128)
+            chan3 = np.zeros((arr_len,len(interp_freqs)), dtype=np.complex128)
         
         for lm in sample["waveform"].keys():
-            
-            l, m = ast.literal_eval(lm)
+            try:
+                l, m = ast.literal_eval(lm)
+            except:
+                l = lm[0]
+                m = lm[1]
 
-            if len(d_ratio) ==1:
+            if np.isscalar(d_ratio) or (isinstance(d_ratio, np.ndarray) and d_ratio.size == 1):
                 sample["waveform"][lm]["amp"]=sample["waveform"][lm]["amp"]*d_ratio
             else:
                 for i in range(len(d_ratio)): #Scale waveform according to distance
                 
                     sample["waveform"][lm]["amp"][i] = sample["waveform"][lm]["amp"][i]*d_ratio[i] 
-                
+            
             
             #l = lm[0]
             #m = lm[1]
 
             #seperate workflows for single vs batched waveform
-            if any(len(np.array(x)) == 1 for x in [inc,phi,lambd,beta]):
+            
+            if any(np.size(x) == 1 for x in [inc,phi,lambd,beta]):
                 
                 freq_grid = sample["waveform"][lm]["freq"]
                 freq_grid = np.asarray(freq_grid).ravel()
@@ -335,8 +354,9 @@ class ProjectOntoSpaceDetectors(object):
                 
                 
 
-                
-                chan1_mode,chan2_mode,chan3_mode  = process_transfer(freq_grid,amp, phase,tf,t0,l,m,inc[0],phi[0],lambd[0], beta[0], psi[0],interp_freqs,self.domain.f_min,self.detector_type,self.LISAconst, 
+                # original line that broke the wfd get_items: inc, phi, lambd, beta = [np.array(x).item() if np.size(x) == 1 else x for x in [inc, phi, lambd, beta]]
+                inc, phi, lambd, beta = [np.array(x) if np.size(x) == 1 else x for x in [inc, phi, lambd, beta]] #This line seems to fix the issue 
+                chan1_mode,chan2_mode,chan3_mode  = process_transfer(freq_grid,amp, phase,tf,t0,l,m,inc,phi,lambd, beta, psi,interp_freqs,self.domain.f_min,self.detector_type,self.LISAconst, 
                     self.responseapprox, self.frozenLISA,self.TDIrescaled)
                 
                 sample["waveform"][lm]["Chan1"] = chan1_mode

@@ -15,13 +15,16 @@ from dingo.gw.prior import build_prior_with_defaults, split_off_extrinsic_parame
 from dingo.gw.transforms import (
     GetDetectorTimes,
     ProjectOntoDetectors,
+    ProjectOntoSpaceDetectors,
     WhitenAndScaleStrain,
     ApplyCalibrationUncertainty,
 )
 from dingo.gw.waveform_generator.waveform_generator import (
     WaveformGenerator,
     NewInterfaceWaveformGenerator,
+    LISAWaveformGenerator
 )
+import lisabeta.tools.pytools as pytools
 
 
 class GWSignal(object):
@@ -39,6 +42,7 @@ class GWSignal(object):
         data_domain: UniformFrequencyDomain | MultibandedFrequencyDomain,
         ifo_list: list,
         t_ref: float,
+        lisa_settings: dict | None = None,
     ):
         """
         Parameters
@@ -58,6 +62,8 @@ class GWSignal(object):
         self._use_base_domain = False
         self._check_domains(wfg_domain, data_domain)
         self.data_domain = data_domain
+        self.LISA_flag = wfg_kwargs.get("LISA", False)
+        self.lisa_settings = lisa_settings
 
         # The waveform generator potentially has a larger frequency range than the
         # domain of the trained network / requested injection / etc. This is typically
@@ -69,11 +75,16 @@ class GWSignal(object):
             self.waveform_generator = NewInterfaceWaveformGenerator(
                 domain=wfg_domain, **wfg_kwargs
             )
+        elif self.LISA_flag:
+            self.waveform_generator = LISAWaveformGenerator(domain = wfg_domain, **wfg_kwargs)
         else:
             self.waveform_generator = WaveformGenerator(domain=wfg_domain, **wfg_kwargs)
 
         self.t_ref = t_ref
-        self.ifo_list = InterferometerList(ifo_list)
+        if not self.LISA_flag:
+            self.ifo_list = InterferometerList(ifo_list)
+        else:
+            self.ifo_list = ifo_list
 
         # When we set self.whiten, the projection transforms are automatically prepared.
         self._calibration_envelope = None
@@ -157,10 +168,15 @@ class GWSignal(object):
         self._initialize_transform()
 
     def _initialize_transform(self):
-        transforms = [
-            GetDetectorTimes(self.ifo_list, self.t_ref),
-            ProjectOntoDetectors(self.ifo_list, self.data_domain, self.t_ref),
-        ]
+        if self.LISA_flag:
+            transforms = [ProjectOntoSpaceDetectors("TDIAET",self.data_domain,self.t_ref,self.lisa_settings)]
+            
+        else:
+                                                    
+            transforms = [
+                GetDetectorTimes(self.ifo_list, self.t_ref),
+                ProjectOntoDetectors(self.ifo_list, self.data_domain, self.t_ref),
+            ]
         if self.calibration_marginalization_kwargs:
             transforms.append(
                 ApplyCalibrationUncertainty(
@@ -199,11 +215,18 @@ class GWSignal(object):
         theta_intrinsic, theta_extrinsic = split_off_extrinsic_parameters(theta)
         theta_intrinsic = {k: float(v) for k, v in theta_intrinsic.items()}
 
-        # Step 1: generate polarizations h_plus and h_cross
-        polarizations = self.waveform_generator.generate_hplus_hcross(theta_intrinsic)
-        polarizations = {  # truncation, in case wfg has a larger frequency range
+        # Step 1: generate polarizations h_plus and h_cross or AMp/Phase for LISA
+        if isinstance(self.waveform_generator, LISAWaveformGenerator):
+            theta_intrinsic = pytools.complete_mass_params(theta_intrinsic)
+            theta_intrinsic = pytools.complete_spin_params(theta_intrinsic)
+            
+            
+            polarizations = self.waveform_generator.generate_amp_phase({**theta_extrinsic,**theta_intrinsic})
+        else:
+            polarizations = self.waveform_generator.generate_hplus_hcross(theta_intrinsic)
+            polarizations = {  # truncation, in case wfg has a larger frequency range
             k: self.data_domain.update_data(v) for k, v in polarizations.items()
-        }
+            }
 
         # Step 2: project h_plus and h_cross onto detectors
         sample = {
@@ -211,7 +234,8 @@ class GWSignal(object):
             "extrinsic_parameters": theta_extrinsic,
             "waveform": polarizations,
         }
-
+        
+        
         asd = self.asd
         if asd is not None:
             sample["asds"] = asd
@@ -303,7 +327,10 @@ class GWSignal(object):
 
     @asd.setter
     def asd(self, asd):
-        ifo_names = [ifo.name for ifo in self.ifo_list]
+        if isinstance(self.waveform_generator, LISAWaveformGenerator):
+            ifo_names = [ifo for ifo in self.ifo_list]
+        else:
+            ifo_names = [ifo.name for ifo in self.ifo_list]
         if isinstance(asd, ASDDataset):
             if set(asd.asds.keys()) != set(ifo_names):
                 raise KeyError("ASDDataset ifos do not match signal.")
@@ -358,7 +385,11 @@ class Injection(GWSignal):
             metadata["train_settings"]["data"]["extrinsic_prior"]
         )
         prior = build_prior_with_defaults({**intrinsic_prior, **extrinsic_prior})
-
+        if 'lisa_settings' in metadata["train_settings"]["data"].keys():
+            lisa_settings = metadata["train_settings"]["data"]["lisa_settings"]
+        else:
+            lisa_settings = None
+        
         return cls(
             prior=prior,
             wfg_kwargs=metadata["dataset_settings"]["waveform_generator"],
@@ -366,6 +397,7 @@ class Injection(GWSignal):
             data_domain=build_domain_from_model_metadata(metadata),
             ifo_list=metadata["train_settings"]["data"]["detectors"],
             t_ref=metadata["train_settings"]["data"]["ref_time"],
+            lisa_settings = lisa_settings
         )
 
     def injection(self, theta):

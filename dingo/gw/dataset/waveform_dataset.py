@@ -9,6 +9,15 @@ from dingo.core.dataset import DingoDataset, recursive_hdf5_load
 from dingo.gw.SVD import SVDBasis, ApplySVD
 from dingo.gw.domains import build_domain
 from dingo.gw.transforms import WhitenFixedASD
+from threadpoolctl import threadpool_limits
+from multiprocessing import Pool, cpu_count
+
+from dingo.gw.waveform_generator import (
+    NewInterfaceWaveformGenerator,
+    LISAWaveformGenerator,
+    WaveformGenerator,
+    generate_waveforms_parallel,
+)
 
 
 
@@ -39,6 +48,7 @@ class WaveformDataset(DingoDataset, torch.utils.data.Dataset):
         domain_update: Optional[dict] = None,
         svd_size_update: Optional[int] = None,
         leave_waveforms_on_disk: Optional[bool] = False,
+        on_fly: Optional[bool] = False
     ):
         """
         For constructing, provide either file_name, or dictionary containing data and
@@ -84,6 +94,26 @@ class WaveformDataset(DingoDataset, torch.utils.data.Dataset):
         if self.settings is not None:
             self.load_supplemental(domain_update, svd_size_update)
             self.svd_size_update = svd_size_update
+        if on_fly: # We need to have a waveform generator to handle this
+            domain = build_domain(self.settings["domain"])
+            new_interface_flag = self.settings["waveform_generator"].get("new_interface", False)
+            LISA_flag = self.settings["waveform_generator"].get("LISA", False)
+
+            if new_interface_flag:
+                self.waveform_generator = NewInterfaceWaveformGenerator(
+                    domain=domain,
+                    **self.settings["waveform_generator"],
+                )
+            elif LISA_flag:
+                self.waveform_generator = LISAWaveformGenerator(
+                    domain=domain,
+                    **self.settings["waveform_generator"],
+                )
+            else:
+                self.waveform_generator = WaveformGenerator(
+                    domain=domain,
+                    **self.settings["waveform_generator"],
+                )
 
     def load_supplemental(
         self,
@@ -350,14 +380,38 @@ class WaveformDataset(DingoDataset, torch.utils.data.Dataset):
             parameters = {
                 k: v.to_numpy() for k, v in self.parameters.iloc[batched_idx].items()
             }
-            #This line adds support for the extra dict layer in LISA waveforms
-            polarizations = {
+            # Feel like this might be messy but this is where we generate the waveforms for on the fly
+            if self.polarizations is None:
+                local_batch_idx = range(len(batched_idx))
+                #num_processes = cpu_count()
+                #if num_processes > 1:
+                #    with threadpool_limits(limits=1, user_api="blas"):
+                #        with Pool(processes=num_processes) as pool:
+                #            batch_waveforms = generate_waveforms_parallel(
+                #                self.waveform_generator, self.parameters.iloc[batched_idx], pool
+                #)
+                #else:
+                batch_waveforms = generate_waveforms_parallel(self.waveform_generator, self.parameters.iloc[batched_idx])
+                
+                polarizations = {
                 pol: {
-                    key: self.get_batch(val, batched_idx)
+                    key: self.get_batch(val, local_batch_idx)
                     for key, val in waveforms.items()
-                } if isinstance(waveforms, dict) else self.get_batch(waveforms, batched_idx)
-                for pol, waveforms in self.polarizations.items()
+                } if isinstance(waveforms, dict) else self.get_batch(waveforms, local_batch_idx)
+                for pol, waveforms in batch_waveforms.items()
             }
+                
+
+
+            #This line adds support for the extra dict layer in LISA waveforms
+            else:
+                polarizations = {
+                    pol: {
+                        key: self.get_batch(val, batched_idx)
+                        for key, val in waveforms.items()
+                    } if isinstance(waveforms, dict) else self.get_batch(waveforms, batched_idx)
+                    for pol, waveforms in self.polarizations.items()
+                }
 
         # Decompression transforms are assumed to apply only to the waveform,
         # and do not involve parameters.
@@ -375,11 +429,25 @@ class WaveformDataset(DingoDataset, torch.utils.data.Dataset):
         # Repackage data into a list of length batch_size, each item having the same
         # structure as before.
 
-        if isinstance(data, dict):
-            data = [
-                {k1: {k2: v2[j] for k2, v2 in v1.items()} for k1, v1 in data.items()}
+        if isinstance(data, dict): #Two versions need to be blended better
+            
+            """data = [
+                {
+                    k1: (
+                        {k2: v2[j] for k2, v2 in v1.items()}  # flat structure (parameters or channels)
+                        if all(not isinstance(v2, dict) for v2 in v1.values()) else
+                        {k2: {k3: v3[j] for k3, v3 in v2.items()} for k2, v2 in v1.items()}  # nested dict structure
+                    )
+                    for k1, v1 in data.items()
+                }
                 for j in range(len(batched_idx))
-            ]
+            ]"""
+
+             # This is the original version.
+            data = [
+            {k1: {k2: v2[j] for k2, v2 in v1.items()} for k1, v1 in data.items()}
+            for j in range(len(batched_idx))
+        ]
         elif isinstance(data, list):
             data = [
                 [data[i][j] for i in range(len(data))] for j in range(len(batched_idx))
@@ -406,3 +474,95 @@ class WaveformDataset(DingoDataset, torch.utils.data.Dataset):
         mean = self.parameters.mean().to_dict()
         std = self.parameters.std().to_dict()
         return mean, std
+
+class OntheFlyWaveformDataset(DingoDataset, torch.utils.data.Dataset):
+    """This class generates a dataset of waveforms (polarizations) and corresponding
+    parameters on the fly.
+
+    Instead of loading a static dataset from an HDF5 file, it computationally
+    synthesizes each data sample in real-time. This is achieved using a waveform 
+    generator engine and parameter sampling distributions defined in the settings.
+
+    This approach is inherently memory-efficient, as the full dataset never needs to
+    reside in RAM or on disk. Waveforms are created just-in-time for each training
+    batch and are immediately discarded after use.
+
+    To accommodate parameter standardization, this class provides the mean and standard
+    deviation calculated directly from the analytical properties of the predefined
+    parameter sampling distributions, rather than from a complete set of saved parameters.
+
+    The waveform data is consumed through a __getitem__() call, which triggers the 
+    generation of a new sample, packages it, and applies a chain of transformations.
+    """
+
+    dataset_type = "on_the_fly_waveform_dataset"
+
+    def __init__(
+        self,
+        prior,
+        waveform_generator,
+        samples_per_epoch: int,
+        transform: Optional[callable] = None,
+    ):
+        """
+        Parameters
+        ----------
+        prior : object
+            An initialized prior object (e.g., from build_prior_with_defaults)
+            with a .sample() method that returns a dictionary of parameters.
+        waveform_generator : object
+            An initialized waveform generator object with a .generate_hplus_hcross()
+            method (or similar) that takes parameters and returns polarizations.
+        samples_per_epoch : int
+            The number of unique samples to generate for one epoch.
+        transform : callable, optional
+            A transform to be applied to the data sample after it is generated.
+        """
+        self.prior = prior
+        self.waveform_generator = waveform_generator
+        self.samples_per_epoch = samples_per_epoch
+        self.transform = transform
+
+    def __len__(self):
+        """Returns the number of samples to be generated per epoch."""
+        return self.samples_per_epoch
+
+    def __getitem__(self, idx: int) -> Dict:
+        """
+        Generates, packages, and transforms a single data sample.
+
+        Note: The `idx` argument is unused since we generate a new random sample
+        every time, but it is required by the PyTorch Dataset API.
+        """
+        # 1. Sample parameters from the provided prior object.
+        parameters = self.prior.sample()
+
+        # 2. Generate waveform polarizations using the provided generator.
+        # The generator already has the domain and any pre-transforms (like whitening) built-in.
+        polarizations = self.waveform_generator.generate_amp_phase(parameters)
+
+        # 3. Assemble the data dictionary in the expected format.
+        data = {"parameters": parameters, "waveform": polarizations}
+
+        # 4. Apply any final transformations (e.g., adding noise).
+        if self.transform:
+            data = self.transform(data)
+
+        return data
+
+    def parameter_mean_std(self):
+        """
+        Returns the mean and std of the parameter prior distributions.
+        This attempts to get the values directly from the prior object.
+        """
+        # This assumes your prior object has `mean` and `std` properties
+        # or methods to compute them, which is common in Bayesian libraries.
+        if hasattr(self.prior, 'mean') and hasattr(self.prior, 'std'):
+            mean = self.prior.mean
+            std = self.prior.std
+            return mean, std
+        else:
+            # Fallback for priors that don't have this implemented.
+            print("WARNING: .mean and .std not available on prior object. Check prior implementation.")
+            # Returning None or raising an error would be appropriate here.
+            return None, None

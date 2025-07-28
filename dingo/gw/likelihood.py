@@ -29,6 +29,7 @@ class StationaryGaussianGWLikelihood(GWSignal, Likelihood):
     def __init__(
         self,
         wfg_kwargs,
+        lisa_kwargs, #Added lisa_kwargs.  Quick fix.
         wfg_domain,
         data_domain,
         event_data,
@@ -71,6 +72,7 @@ class StationaryGaussianGWLikelihood(GWSignal, Likelihood):
             data_domain=data_domain,
             ifo_list=list(event_data["waveform"].keys()),
             t_ref=t_ref,
+            lisa_settings = lisa_kwargs #Added lisa settings.  Quick Fix.
         )
 
         if isinstance(data_domain, MultibandedFrequencyDomain) and not use_base_domain:
@@ -267,6 +269,7 @@ class StationaryGaussianGWLikelihood(GWSignal, Likelihood):
         """
 
         # Step 1: Compute whitened GW strain mu(theta) for parameters theta.
+        
         mu = self.signal(theta)["waveform"]
         d = self.whitened_strains
 

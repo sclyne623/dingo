@@ -32,6 +32,7 @@ from dingo.core.utils import *
 def build_dataset(
     data_settings: dict,
     leave_waveforms_on_disk: Optional[bool] = False,
+    on_fly: Optional[bool] = False,
 ) -> WaveformDataset:
     """Build a dataset based on a settings dictionary. This should contain the path of
     a saved waveform dataset.
@@ -45,6 +46,8 @@ def build_dataset(
         If provided, the values associated with the waveforms will not be loaded into memory during initialization.
         Instead, they will be loaded from disk when the dataset is accessed. This is useful for reducing the memory
         load of large datasets, but can slow down data preprocessing.
+    on_fly: bool
+        if provided, will generate polarizations on the fly when calling get_item from the waveform dataset
 
     Returns
     -------
@@ -59,6 +62,7 @@ def build_dataset(
         domain_update=domain_update,
         svd_size_update=data_settings.get("svd_size_update"),
         leave_waveforms_on_disk=leave_waveforms_on_disk,
+        on_fly=on_fly,
     )
     return wfd
 
@@ -322,7 +326,7 @@ def build_svd_for_embedding_network(
     basis_dict = {}
     for ifo in ifos:
         basis = SVDBasis()
-        basis.generate_basis(waveforms[ifo][:num_training_samples], size)
+        basis.generate_basis(waveforms[ifo][:num_training_samples], size, "scipy")
         basis_dict[ifo] = basis
         print(f"...{ifo} done.")
     print(f"...this took {time.time() - time_start:.0f} s.")

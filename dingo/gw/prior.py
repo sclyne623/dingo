@@ -189,7 +189,7 @@ def split_off_extrinsic_parameters(theta):
     theta_extrinsic: dict
         BBH extrinsic parameters.
     """
-    extrinsic_parameters = ["geocent_time", "luminosity_distance", "ra", "dec", "psi"]
+    extrinsic_parameters = ["geocent_time", "luminosity_distance", "ra", "dec", "psi","dist","beta","lambda","inc"]
     theta_intrinsic = {}
     theta_extrinsic = {}
     for k, v in theta.items():
@@ -200,4 +200,5 @@ def split_off_extrinsic_parameters(theta):
     # set fiducial values for time and distance
     theta_intrinsic["geocent_time"] = 0
     theta_intrinsic["luminosity_distance"] = 100
+    theta_intrinsic["dist"] = 100 #Hard Coded for LISA
     return theta_intrinsic, theta_extrinsic

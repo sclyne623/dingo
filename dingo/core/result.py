@@ -267,7 +267,25 @@ class Result(DingoDataset):
             for k, v in self.prior.items()
             if not isinstance(v, (Constraint, DeltaFunction))
         ]
+
+        #Check if parameters are for LISA and adjust if so
+        required_keys = {'beta', 'dist', 'lambda'}
+        if required_keys.issubset(param_keys_non_fixed):
+            # Rename entries
+            if 'chirp_mass' in param_keys_non_fixed:
+                param_keys_non_fixed[param_keys_non_fixed.index('chirp_mass')] = 'Mchirp'
+            if 'mass_ratio' in param_keys_non_fixed:
+                param_keys_non_fixed[param_keys_non_fixed.index('mass_ratio')] = 'q'
+    
+    # Remove 'dec', 'ra', and 'luminosity_distance'
+            param_keys_non_fixed = [
+                k for k in param_keys_non_fixed if k not in ('dec', 'ra', 'luminosity_distance')
+            ]
+        
         theta_non_fixed = self.samples[param_keys_non_fixed]
+        if required_keys.issubset(param_keys_non_fixed):
+            #Rename columns to be consistent with dingo.  quick fix.
+            theta_non_fixed.rename(columns = {"Mchirp":"chirp_mass","q":"mass_ratio"}, inplace = True)
         log_prior = self.prior.ln_prob(theta_non_fixed, axis=0)
 
         # select parameters in self.samples (required as log_prob and potentially gnpe
@@ -275,7 +293,23 @@ class Result(DingoDataset):
         # For evaluating the likelihood, we want to keep the fixed parameters.
         # TODO: replace by self.metadata["train_settings"]["data"]["inference_parameters"]
         param_keys = [k for k, v in self.prior.items() if not isinstance(v, Constraint)]
+
+        #Check if parameters are from LISA and adjust if so.
+        if required_keys.issubset(param_keys):
+            # Rename entries
+            if 'chirp_mass' in param_keys:
+                param_keys[param_keys.index('chirp_mass')] = 'Mchirp'
+            if 'mass_ratio' in param_keys:
+                param_keys[param_keys.index('mass_ratio')] = 'q'
+
+            param_keys = [
+                k for k in param_keys if k not in ('dec', 'ra', 'luminosity_distance')
+            ]
+
+        
         theta = self.samples[param_keys]
+        #Right now lal/dingo uses chi_1, chi_2, but called chi1, chi2 in lisabeta.  quick fix
+        theta.rename(columns = {"chi_1":"chi1","chi_2":"chi2"}, inplace = True)
 
         # The prior or delta_log_prob_target may be -inf for certain samples.
         # For these, we do not want to evaluate the likelihood, in particular because
