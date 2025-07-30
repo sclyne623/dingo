@@ -64,7 +64,7 @@ class MultibandedFrequencyDomain(BaseFrequencyDomain):
 
             base_domain = build_domain(base_domain)
 
-        self.nodes = np.array(nodes, dtype=np.float32)
+        self.nodes = np.array(nodes, dtype=np.float64)
         self.base_domain = base_domain
         self._initialize_bands(delta_f_initial)
         if not isinstance(self.base_domain, UniformFrequencyDomain):
@@ -87,7 +87,7 @@ class MultibandedFrequencyDomain(BaseFrequencyDomain):
 
         self._delta_f_bands = (
             delta_f_initial * (2 ** np.arange(self.num_bands))
-        ).astype(np.float32)
+        ).astype(np.float64)
         self._decimation_factors_bands = (
             self._delta_f_bands / self.base_domain.delta_f
         ).astype(int)
