@@ -1754,7 +1754,7 @@ class LISAWaveformGenerator:
         self._domain = value
         if isinstance(
             self._domain, MultibandedFrequencyDomain
-        ) and not LS.SimInspiralImplementedFDApproximants(self.approximant):
+        ) and not LS.SimInspiralImplementedFDApproximants(LS.GetApproximantFromString(self.approximant_str)):
             # For non-frequency domain approximants, generate waveforms in the base
             # UniformFrequencyDomain, and later decimate.
             self._use_base_domain = True
