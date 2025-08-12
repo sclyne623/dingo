@@ -326,7 +326,7 @@ def build_svd_for_embedding_network(
     basis_dict = {}
     for ifo in ifos:
         basis = SVDBasis()
-        basis.generate_basis(waveforms[ifo][:num_training_samples], size, "random")
+        basis.generate_basis(waveforms[ifo][:num_training_samples], size, "scipy")
         basis_dict[ifo] = basis
         print(f"...{ifo} done.")
     print(f"...this took {time.time() - time_start:.0f} s.")
