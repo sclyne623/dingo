@@ -96,7 +96,7 @@ def set_train_transforms(wfd, data_settings, asd_dataset_path, omit_transforms=N
     asd_dataset = ASDDataset(
         asd_dataset_path,
         ifos=data_settings["detectors"],
-        precision="single",
+        precision="double",
         domain_update=wfd.domain.domain_dict,
     )
     assert wfd.domain == asd_dataset.domain
