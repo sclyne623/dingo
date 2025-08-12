@@ -58,7 +58,7 @@ def build_dataset(
     domain_update = data_settings.get("domain_update", None)
     wfd = WaveformDataset(
         file_name=data_settings["waveform_dataset_path"],
-        precision="double",
+        precision="single",
         domain_update=domain_update,
         svd_size_update=data_settings.get("svd_size_update"),
         leave_waveforms_on_disk=leave_waveforms_on_disk,
