@@ -175,7 +175,7 @@ def set_train_transforms(wfd, data_settings, asd_dataset_path, omit_transforms=N
         )
         data_settings["standardization"] = standardization_dict
     if data_settings["detector_type"] == "LISA":
-        transforms.append(ProjectOntoSpaceDetectors("TDIAET",domain, ref_time,data_settings["lisa_settings"])) #Hard Coded need to change
+        transforms.append(ProjectOntoSpaceDetectors("TDIAET",domain, ref_time,data_settings["detectors"],data_settings["lisa_settings"])) #Hard Coded need to change
     else:
         transforms.append(ProjectOntoDetectors(ifo_list, domain, ref_time))
     transforms.append(SampleNoiseASD(asd_dataset))

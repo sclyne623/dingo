@@ -3,6 +3,9 @@ import pandas as pd
 import scipy
 from sklearn.utils.extmath import randomized_svd
 from dingo.core.dataset import DingoDataset
+import cupy as cp
+import math
+from scipy.sparse.linalg import svds
 
 
 class SVDBasis(DingoDataset):
@@ -48,7 +51,7 @@ class SVDBasis(DingoDataset):
             if n == 0:
                 n = min(training_data.shape)
 
-            U, s, Vh = randomized_svd(training_data, n, random_state=0)
+            U, s, Vh = randomized_svd(training_data, n, n_oversamples=15,n_iter=30, random_state=0)
 
             self.Vh = Vh.astype(np.complex128)  # TODO: fix types
             self.V = self.Vh.T.conj()
@@ -56,7 +59,15 @@ class SVDBasis(DingoDataset):
             self.s = s
         elif method == "scipy":
             # Code below uses scipy's svd tool. Likely slower.
-            U, s, Vh = scipy.linalg.svd(training_data, full_matrices=False)
+            try:
+                U, s, Vh = scipy.linalg.svd(training_data, full_matrices=False)
+            except:
+                U, s, Vh = svds(training_data, k=n)
+                # svds returns s in ascending order; reverse to match full SVD behavior
+                idx = s.argsort()[::-1]
+                s = s[idx]
+                U = U[:, idx]
+                Vh = Vh[idx, :]
             V = Vh.T.conj()
 
             if (n == 0) or (n > len(V)):
@@ -68,8 +79,76 @@ class SVDBasis(DingoDataset):
 
             self.n = len(self.Vh)
             self.s = s
+        elif method == "cupy":
+            print("Using CuPy for SVD on GPU.")
+            
+            # 1. Move data from CPU (NumPy) to GPU (CuPy)
+            training_data_gpu = cupy.asarray(training_data)
+
+            # 2. Perform SVD on the GPU
+            U_gpu, s_gpu, Vh_gpu = cupy.linalg.svd(training_data_gpu, full_matrices=False)
+
+            # 3. Move results back to CPU (NumPy)
+
+            s = cupy.asnumpy(s_gpu)
+            Vh = cupy.asnumpy(Vh_gpu)
+            V = Vh.T.conj()
+
+
+            # Truncate the basis to the desired size `n` (same logic as scipy)
+            if (n == 0) or (n > len(V)):
+                self.V = V
+                self.Vh = Vh
+            else:
+                self.V = V[:, :n]
+                self.Vh = Vh[:n, :]
+            
+            self.n = len(self.Vh)
+            self.s = s
+        elif method == "cupy-tsqr":
+            batch_size = 5000
+            print(f"Using manual Tall-Skinny QR on GPU with batch size {batch_size}.")
+            
+            # ... (The QR decomposition loop remains the same) ...
+            num_batches = math.ceil(training_data.shape[0] / batch_size)
+            batches = np.array_split(training_data, num_batches)
+            
+            first_batch_gpu = cp.asarray(batches[0])
+            r_matrix = cp.linalg.qr(first_batch_gpu, mode='r')
+
+            for i, batch in enumerate(batches[1:]):
+                print(f"  Processing update batch {i+2}/{num_batches}...")
+                batch_gpu = cp.asarray(batch)
+                combined_matrix = cp.vstack((r_matrix, batch_gpu))
+                r_matrix = cp.linalg.qr(combined_matrix, mode='r')
+
+            print("  Moving final R matrix back to CPU...")
+            r_matrix_cpu = cp.asnumpy(r_matrix)
+            del r_matrix, first_batch_gpu, batch_gpu, combined_matrix
+            cp.get_default_memory_pool().free_all_blocks()
+            
+            # === THE FIX: Use memory-efficient `svds` for the final step ===
+            print(f"  Performing final SVD for top {n} components on CPU using svds...")
+            # We ask for n components, which is the final truncated size of the basis.
+            # k must be less than min(shape)-1, which n=600 will be.
+            _, s_unordered, Vh_unordered = svds(r_matrix_cpu, k=n)
+
+            # CRITICAL: svds does not sort the results. We must do it manually.
+            sort_indices = np.argsort(s_unordered)[::-1]
+            s = s_unordered[sort_indices]
+            Vh = Vh_unordered[sort_indices, :]
+            
+            # The results are already NumPy arrays.
+            print("  SVD on R matrix complete.")
+            self.s = s
+            self.Vh = Vh
+            self.V = self.Vh.T.conj()
+            self.n = len(self.Vh) # The size is now n
+
         else:
             raise ValueError(f"Unsupported SVD method: {method}.")
+
+        
 
     def compute_test_mismatches(
         self,

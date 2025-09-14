@@ -222,7 +222,7 @@ class ProjectOntoSpaceDetectors(object):
     
     """
 
-    def __init__(self, detector_type, domain, ref_time, lisa_settings):
+    def __init__(self, detector_type, domain, ref_time,channels, lisa_settings):
         self.detector_type = detector_type
         self.domain = domain
         self.ref_time = ref_time
@@ -230,6 +230,7 @@ class ProjectOntoSpaceDetectors(object):
         self.responseapprox = lisa_settings["responseapprox"]
         self.frozenLISA = lisa_settings["frozenLISA"]
         self.TDIrescaled = lisa_settings["TDIrescaled"]
+        self.channels = channels
     
 
     def __call__(self, input_sample):
@@ -310,11 +311,13 @@ class ProjectOntoSpaceDetectors(object):
         if np.isscalar(d_new):
             chan1 = np.zeros(len(interp_freqs),dtype = np.complex128)
             chan2 = np.zeros(len(interp_freqs), dtype=np.complex128)
-            chan3 = np.zeros(len(interp_freqs), dtype=np.complex128)
+            if "chan3" in self.channels:
+                chan3 = np.zeros(len(interp_freqs), dtype=np.complex128)
         else:        
             chan1 = np.zeros((arr_len,len(interp_freqs)), dtype=np.complex128)
             chan2 = np.zeros((arr_len,len(interp_freqs)), dtype=np.complex128)
-            chan3 = np.zeros((arr_len,len(interp_freqs)), dtype=np.complex128)
+            if "chan3" in self.channels:
+                chan3 = np.zeros((arr_len,len(interp_freqs)), dtype=np.complex128)
         
         for lm in sample["waveform"].keys():
             try:
@@ -361,7 +364,8 @@ class ProjectOntoSpaceDetectors(object):
                 
                 sample["waveform"][lm]["Chan1"] = chan1_mode
                 sample["waveform"][lm]["Chan2"] = chan2_mode
-                sample["waveform"][lm]["Chan3"] = chan3_mode
+                if "chan3" in self.channels:
+                    sample["waveform"][lm]["Chan3"] = chan3_mode
             else:
                 
             
@@ -372,25 +376,33 @@ class ProjectOntoSpaceDetectors(object):
                 #Probably dont need this but useful for checking
                 chan1_mode = np.stack([i[0] for i in mode_strains], axis=0)
                 chan2_mode = np.stack([i[1] for i in mode_strains], axis=0)
-                chan3_mode = np.stack([i[2] for i in mode_strains], axis=0)
+                if "chan3" in self.channels:
+                    chan3_mode = np.stack([i[2] for i in mode_strains], axis=0)
                 del mode_strains
             
             
             
             chan1+=chan1_mode
             chan2+=chan2_mode
-            chan3+=chan3_mode
+            #chan3+=chan3_mode
 
             
             del chan1_mode
             del chan2_mode
-            del chan3_mode
+            #del chan3_mode
+
+            if "chan3" in self.channels:
+                chan3+=chan3_mode
+                del chan3_mode
+
 
        
         strains = {"chan1": chan1,
                 "chan2": chan2,
-                "chan3":chan3
         }
+        if "chan3" in self.channels:
+            strains["chan3"] = chan3
+
 
         
 
