@@ -766,7 +766,7 @@ class WaveformGenerator:
                 # Tapering is different depending on which waveform you use
                 if (
                     self.approximant_str == "SEOBNRv4HM"
-                    or self.approximant_str == "NRsur7dq4"
+                    or self.approximant_str == "NRSur7dq4"
                 ):
                     if self.approximant_str == "SEOBNRv4HM":
                         parameters_lal, iota = self._convert_parameters_to_lal_frame(
@@ -780,7 +780,7 @@ class WaveformGenerator:
                             parameters_lal[6],
                         )
 
-                    elif self.approximant_str == "NRsur7dq4":
+                    elif self.approximant_str == "NRSur7dq4":
                         parameters_lal, iota = self._convert_parameters_to_lal_frame(
                             {**parameters, "f_ref": self.f_ref},
                             lal_target_function="SimInspiralChooseTDModes",
