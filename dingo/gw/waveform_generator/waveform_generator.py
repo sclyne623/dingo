@@ -1088,6 +1088,19 @@ class WaveformGenerator:
                         hlm_td[(l, m)] = lal.CreateCOMPLEX16TimeSeries(f"h_{l,m}", hlm.epoch, hlm.f0, hlm.deltaT, hlm.sampleUnits, longest_arr_length)
                         hlm_td[(l, m)].data.data = arr
 
+                elif self.approximant_str == "NRSur7dq4":
+
+                    parameters_lal_TD = self._convert_parameters_to_lal_frame(
+                            {**parameters, "f_ref": self.f_ref},
+                            lal_target_function="SimInspiralTD",
+                        )
+                    
+
+                    hplus, hcross = LS.SimInspiralChooseTDWaveform(*parameters_lal_TD)
+                    window = wfg_utils.get_tapering_window_for_complex_time_series(hplus, 1)
+                    hlm_td, iota = self.generate_TD_modes_L0(parameters)
+                    for _, h in hlm_td.items():
+                        h.data.data *= window
 
                 else:
                     hlm_td, iota = self.generate_TD_modes_L0(parameters)
