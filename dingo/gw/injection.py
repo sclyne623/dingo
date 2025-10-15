@@ -169,7 +169,8 @@ class GWSignal(object):
 
     def _initialize_transform(self):
         if self.LISA_flag:
-            transforms = [ProjectOntoSpaceDetectors("TDIAET",self.data_domain,self.t_ref,self.lisa_settings)]
+            
+            transforms = [ProjectOntoSpaceDetectors("TDIAET",self.data_domain,self.t_ref,self.ifo_list,self.lisa_settings)]
             
         else:
                                                     
@@ -389,7 +390,6 @@ class Injection(GWSignal):
             lisa_settings = metadata["train_settings"]["data"]["lisa_settings"]
         else:
             lisa_settings = None
-        
         return cls(
             prior=prior,
             wfg_kwargs=metadata["dataset_settings"]["waveform_generator"],

@@ -276,6 +276,10 @@ class Result(DingoDataset):
                 param_keys_non_fixed[param_keys_non_fixed.index('chirp_mass')] = 'Mchirp'
             if 'mass_ratio' in param_keys_non_fixed:
                 param_keys_non_fixed[param_keys_non_fixed.index('mass_ratio')] = 'q'
+            if 'chi_1' in param_keys_non_fixed:
+                param_keys_non_fixed[param_keys_non_fixed.index('chi_1')] = 'chi1'
+            if 'chi_2' in param_keys_non_fixed:
+                param_keys_non_fixed[param_keys_non_fixed.index('chi_2')] = 'chi2'
     
     # Remove 'dec', 'ra', and 'luminosity_distance'
             param_keys_non_fixed = [
@@ -285,7 +289,7 @@ class Result(DingoDataset):
         theta_non_fixed = self.samples[param_keys_non_fixed]
         if required_keys.issubset(param_keys_non_fixed):
             #Rename columns to be consistent with dingo.  quick fix.
-            theta_non_fixed.rename(columns = {"Mchirp":"chirp_mass","q":"mass_ratio"}, inplace = True)
+            theta_non_fixed.rename(columns = {"Mchirp":"chirp_mass","q":"mass_ratio","chi1":"chi_1","chi2":"chi_2"}, inplace = True)
         log_prior = self.prior.ln_prob(theta_non_fixed, axis=0)
 
         # select parameters in self.samples (required as log_prob and potentially gnpe
@@ -301,6 +305,11 @@ class Result(DingoDataset):
                 param_keys[param_keys.index('chirp_mass')] = 'Mchirp'
             if 'mass_ratio' in param_keys:
                 param_keys[param_keys.index('mass_ratio')] = 'q'
+
+            if 'chi_1' in param_keys:
+                param_keys[param_keys.index('chi_1')] = 'chi1'
+            if 'chi_2' in param_keys:
+                param_keys[param_keys.index('chi_2')] = 'chi2'
 
             param_keys = [
                 k for k in param_keys if k not in ('dec', 'ra', 'luminosity_distance')

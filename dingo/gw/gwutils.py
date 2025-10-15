@@ -107,11 +107,11 @@ def get_standardization_dict(
     # them numerically.
     ext_prior = BBHExtrinsicPriorDict(extrinsic_prior_dict)
     mean_extrinsic, std_extrinsic = ext_prior.mean_std(ext_prior.keys())
-
+    EPSILON = 1e-12
     # Check that overlap between intrinsic and extrinsic parameters is only
     # due to fiducial values (-> std 0)
     for k in std_intrinsic.keys() & std_extrinsic.keys():
-        if std_intrinsic[k] != 0:
+        if std_intrinsic[k] > EPSILON:
             raise ValueError(f'Expected intrinsic prior for {k} to be a fixed value in the waveform dataset, '
                              f'since {k} is specified as an extrinsic prior in the train settings and will be sampled'
                              f'during training. However, the standard deviation of {k} is non-zero: {std_intrinsic[k]}'

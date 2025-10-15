@@ -34,6 +34,7 @@ from dingo.gw.transforms.waveform_transforms import DecimateAll
 import lisabeta.lisa.lisatools as lisatools
 import lisabeta.pyconstants as pyconstants
 import lisabeta.waveforms.bbh.pyIMRPhenomHM as pyIMRPhenomHM
+import lisabeta.waveforms.bbh.pyIMRPhenomD as pyIMRPhenomD
 import lisabeta.tools.pytools as pytools
 
 
