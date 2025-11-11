@@ -281,9 +281,9 @@ class Result(DingoDataset):
             if 'chi_2' in param_keys_non_fixed:
                 param_keys_non_fixed[param_keys_non_fixed.index('chi_2')] = 'chi2'
     
-    # Remove 'dec', 'ra', and 'luminosity_distance'
+    # Remove 'dec', 'ra', and 'luminosity_distance' and phi
             param_keys_non_fixed = [
-                k for k in param_keys_non_fixed if k not in ('dec', 'ra', 'luminosity_distance')
+                k for k in param_keys_non_fixed if k not in ('dec', 'ra', 'luminosity_distance',"phi")
             ]
         
         theta_non_fixed = self.samples[param_keys_non_fixed]
@@ -306,9 +306,9 @@ class Result(DingoDataset):
             if 'mass_ratio' in param_keys:
                 param_keys[param_keys.index('mass_ratio')] = 'q'
 
-            if 'chi_1' in param_keys:
+            if 'chi_1' in param_keys and "chi_1" not in self.samples.columns:
                 param_keys[param_keys.index('chi_1')] = 'chi1'
-            if 'chi_2' in param_keys:
+            if 'chi_2' in param_keys and "chi_2" not in self.samples.columns:
                 param_keys[param_keys.index('chi_2')] = 'chi2'
 
             param_keys = [
@@ -317,8 +317,9 @@ class Result(DingoDataset):
 
         
         theta = self.samples[param_keys]
-        #Right now lal/dingo uses chi_1, chi_2, but called chi1, chi2 in lisabeta.  quick fix
         theta.rename(columns = {"chi_1":"chi1","chi_2":"chi2"}, inplace = True)
+        #Right now lal/dingo uses chi_1, chi_2, but called chi1, chi2 in lisabeta.  quick fix
+        
 
         # The prior or delta_log_prob_target may be -inf for certain samples.
         # For these, we do not want to evaluate the likelihood, in particular because

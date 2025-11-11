@@ -213,6 +213,9 @@ class Result(CoreResult):
         # Split off prior over phase if samples appear to be phase-marginalized.
         if "phase" in self.prior.keys() and "phase" not in self.samples:
             self.phase_prior = self.prior.pop("phase")
+        if "phi" in self.prior.keys() and "phi" not in self.samples:
+            self.phase_prior = self.prior["phi"]
+        
         else:
             self.phase_prior = None
 
