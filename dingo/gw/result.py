@@ -433,12 +433,49 @@ class Result(CoreResult):
         # phase-marginalized likelihood.
 
         # Restrict to samples that are within the prior.
-        param_keys = [k for k, v in self.prior.items() if not isinstance(v, Constraint)]
-        theta = self.samples[param_keys]
-        log_prior = self.prior.ln_prob(theta, axis=0)
-        constraints = self.prior.evaluate_constraints(theta)
-        np.putmask(log_prior, constraints == 0, -np.inf)
-        within_prior = log_prior != -np.inf
+        if self.metadata["dataset_settings"]["waveform_generator"]["LISA"] is True:
+            param_key_dict = {
+                "chirp_mass": "Mchirp",
+                "mass_ratio": "q",
+                #"luminosity_distance": "dist",
+            }
+            inv_param_key_dict = {v: k for k, v in param_key_dict.items()}
+
+            exclude = {"phi", "ra", "dec","luminosity_distance"}
+
+            # Canonical parameter names (prior expects these)
+            param_keys = [
+                k
+                for k, v in self.prior.items()
+                if not isinstance(v, Constraint) and k not in exclude
+            ]
+
+            # Extract samples using LISA column names
+            lisa_keys = [param_key_dict.get(k, k) for k in param_keys]
+            theta_lisa = self.samples[lisa_keys]
+
+            # Rename columns BACK to canonical names
+            theta = theta_lisa.rename(columns=inv_param_key_dict)
+            print(theta.columns)
+            # 🔒 Ensure column order exactly matches prior
+            theta = theta[param_keys]
+
+            log_prior = self.prior.ln_prob(theta, axis=0)
+            constraints = self.prior.evaluate_constraints(theta)
+
+            np.putmask(log_prior, constraints == 0, -np.inf)
+            within_prior = log_prior != -np.inf
+
+
+        else:
+
+            param_keys = [k for k, v in self.prior.items() if not isinstance(v, Constraint)]
+            print(param_keys)
+            theta = self.samples[param_keys]
+            log_prior = self.prior.ln_prob(theta, axis=0)
+            constraints = self.prior.evaluate_constraints(theta)
+            np.putmask(log_prior, constraints == 0, -np.inf)
+            within_prior = log_prior != -np.inf
 
         # Put a cap on the number of processes to avoid overhead:
         num_valid_samples = np.sum(within_prior)
