@@ -1847,7 +1847,24 @@ class LISAWaveformGenerator:
             wfhlm = wfClass.get_waveform()
         return wfhlm
             
+    def generate_amp_phase_m(self, parameters):
+        # This calls your existing lisabeta-wrapped method
+        # returns {(l, m): {'amp': ..., 'phase': ..., ...}}
+        raw_modes = self.generate_amp_phase(parameters)
+        
+        pol_m = {}
+        for (l, m), data in raw_modes.items():
+            # Calculate complex frequency-domain strain: A * exp(i * phi)
+            complex_strain = data['amp'] * np.exp(1j * data['phase'])
             
+            # Group by 'm' index. We sum all 'l' contributions for the same 'm'.
+            if m not in pol_m:
+                pol_m[m] = {"waveform": complex_strain}
+            else:
+                pol_m[m]["waveform"] += complex_strain
+                
+        return pol_m
+        
         
         
         

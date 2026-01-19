@@ -434,10 +434,10 @@ class Result(CoreResult):
 
         # Restrict to samples that are within the prior.
         if self.metadata["dataset_settings"]["waveform_generator"]["LISA"] is True:
+
             param_key_dict = {
                 "chirp_mass": "Mchirp",
-                "mass_ratio": "q",
-                #"luminosity_distance": "dist",
+                "mass_ratio": "q"
             }
             inv_param_key_dict = {v: k for k, v in param_key_dict.items()}
 
@@ -452,6 +452,8 @@ class Result(CoreResult):
 
             # Extract samples using LISA column names
             lisa_keys = [param_key_dict.get(k, k) for k in param_keys]
+            if "chi_1" in lisa_keys and "chi1" not in lisa_keys:
+                lisa_keys.extend(["chi1", "chi2"])
             theta_lisa = self.samples[lisa_keys]
 
             # Rename columns BACK to canonical names
@@ -477,6 +479,7 @@ class Result(CoreResult):
             np.putmask(log_prior, constraints == 0, -np.inf)
             within_prior = log_prior != -np.inf
 
+  
         # Put a cap on the number of processes to avoid overhead:
         num_valid_samples = np.sum(within_prior)
         num_processes = min(
@@ -496,7 +499,7 @@ class Result(CoreResult):
             sample_phase = theta["phase"].to_numpy(copy=True)
 
         # For each sample, build the posterior over phase given the remaining parameters.
-
+        
         phases = np.linspace(0, 2 * np.pi, self.synthetic_phase_kwargs["n_grid"])
         if approximation_22_mode:
             # For each sample, the un-normalized posterior depends only on (d | h(phase)):
@@ -516,7 +519,7 @@ class Result(CoreResult):
 
             phase_log_posterior = apply_func_with_multiprocessing(
                 self.likelihood.log_likelihood_phase_grid,
-                theta.iloc[within_prior],
+                theta_lisa.iloc[within_prior],
                 num_processes=num_processes,
             )
 

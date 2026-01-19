@@ -216,6 +216,7 @@ class GWSignal(object):
         theta_intrinsic, theta_extrinsic = split_off_extrinsic_parameters(theta)
         theta_intrinsic = {k: float(v) for k, v in theta_intrinsic.items()}
 
+
         # Step 1: generate polarizations h_plus and h_cross or AMp/Phase for LISA
         if isinstance(self.waveform_generator, LISAWaveformGenerator):
             theta_intrinsic = pytools.complete_mass_params(theta_intrinsic)
@@ -277,29 +278,78 @@ class GWSignal(object):
         """
         theta_intrinsic, theta_extrinsic = split_off_extrinsic_parameters(theta)
         theta_intrinsic = {k: float(v) for k, v in theta_intrinsic.items()}
+        if isinstance(self.waveform_generator, LISAWaveformGenerator):
+
+            theta_intrinsic = pytools.complete_mass_params(theta_intrinsic)
+            theta_intrinsic["phi"] = theta_intrinsic["phase"]
+            
+            theta_intrinsic = pytools.complete_spin_params(theta_intrinsic)
+            
+            
+            pol_lm = self.waveform_generator.generate_amp_phase({**theta_extrinsic,**theta_intrinsic})
+            m_bins = {}
+            for lm, pol_data in pol_lm.items():
+                m = int(lm[1]) # Ensure m is an integer key
+                
+                # Wrap for the Projector
+                sample_in = {
+                    "parameters": theta_intrinsic,
+                    "extrinsic_parameters": theta_extrinsic,
+                    "waveform": {lm: pol_data},
+                }
+                if self.asd is not None:
+                    sample_in["asds"] = self.asd
+
+                # Run projection (returns dict with 'waveform', 'parameters', etc.)
+                projected_sample = self.projection_transforms(sample_in)
+                
+                # Sum into the m-bin
+                if m not in m_bins:
+                    # We need a deep copy of the structure
+                    m_bins[m] = {
+                        "parameters": projected_sample["parameters"],
+                        "extrinsic_parameters": projected_sample["extrinsic_parameters"],
+                        "waveform": {chan: strain.copy() for chan, strain in projected_sample["waveform"].items()},
+                    }
+                    if self.asd is not None:
+                        m_bins[m]["asds"] = self.asd
+                else:
+                    # Accumulate the waveform for this m index
+                    for chan, strain in projected_sample["waveform"].items():
+                        m_bins[m]["waveform"][chan] += strain
+
+            return m_bins
+            
+
+
+            
 
         # Step 1: generate m-contributions to polarizations h_plus and h_cross
-        pol_m = self.waveform_generator.generate_hplus_hcross_m(theta_intrinsic)
+        else:
+            pol_m = self.waveform_generator.generate_hplus_hcross_m(theta_intrinsic)
+
+        
+
         # truncation, in case wfg has a larger frequency range
-        pol_m = {
-            k_m: {
-                k_pol: self.data_domain.update_data(v_pol)
-                for k_pol, v_pol in v_m.items()
+            pol_m = {
+                k_m: {
+                    k_pol: self.data_domain.update_data(v_pol)
+                    for k_pol, v_pol in v_m.items()
+                }
+                for k_m, v_m in pol_m.items()
             }
-            for k_m, v_m in pol_m.items()
-        }
 
         # Step 2: project m-contributions to h_plus and h_cross onto detectors
-        sample_out = {}
-        for m, pol in pol_m.items():
-            sample = {
-                "parameters": theta_intrinsic,
-                "extrinsic_parameters": theta_extrinsic,
-                "waveform": pol,
-            }
-            if self.asd is not None:
-                sample["asds"] = self.asd
-            sample_out[m] = self.projection_transforms(sample)
+            sample_out = {}
+            for m, pol in pol_m.items():
+                sample = {
+                    "parameters": theta_intrinsic,
+                    "extrinsic_parameters": theta_extrinsic,
+                    "waveform": pol,
+                }
+                if self.asd is not None:
+                    sample["asds"] = self.asd
+                sample_out[m] = self.projection_transforms(sample)
 
         return sample_out
 

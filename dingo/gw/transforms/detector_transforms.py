@@ -275,7 +275,8 @@ class ProjectOntoSpaceDetectors(object):
             raise ValueError("Missing parameters.")
         
         #Hard Code for now need to confirm this is geocent_time
-        t0=1735300818.
+        #t0=1735300818.
+        t0=0.
         
         
         # (1) rescale polarizations and set distance parameter to sampled value
