@@ -347,7 +347,6 @@ class Result(CoreResult):
         theta_sample,
         n_grid=100,
         approximation_22_mode=False,
-        num_processes=1,
     ):
         """
         Test the optimized batch processing implementation against the original
@@ -364,8 +363,6 @@ class Result(CoreResult):
             Number of phase grid points
         approximation_22_mode : bool
             Whether to use 22-mode approximation (skips this test if True)
-        num_processes : int
-            Number of processes to use
             
         Returns
         -------
@@ -392,7 +389,7 @@ class Result(CoreResult):
         phase_log_posterior_orig = apply_func_with_multiprocessing(
             self.likelihood.log_likelihood_phase_grid,
             theta_sample,
-            num_processes=num_processes,
+            num_processes=1,  # Use single process for fair comparison
         )
         time_orig = time.time() - start
         
@@ -402,7 +399,6 @@ class Result(CoreResult):
         phase_log_posterior_opt = self.likelihood.log_likelihood_phase_grid_batch(
             theta_sample,
             phases=phases,
-            num_processes=num_processes,
         )
         time_opt = time.time() - start
         
@@ -564,10 +560,11 @@ class Result(CoreResult):
         else:
             # Use optimized batch processing for phase grid evaluation
             # This is significantly faster than the old approach using apply_func_with_multiprocessing
+            # Note: num_processes is not passed here as waveform generation is sequential
+            # to avoid pickling issues. The speedup comes from vectorized phase evaluation.
             phase_log_posterior = self.likelihood.log_likelihood_phase_grid_batch(
                 theta_valid,
                 phases=phases,
-                num_processes=num_processes,
             )
 
         # Normalize posterior with numerical stability

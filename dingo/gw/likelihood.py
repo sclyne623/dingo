@@ -264,6 +264,11 @@ class StationaryGaussianGWLikelihood(GWSignal, Likelihood):
         )
         return self.log_Zn + kappa2 - 1 / 2.0 * rho2opt
 
+    def _get_signal_m_waveforms(self, theta_dict):
+        """Helper method to extract waveforms from signal_m. Can be pickled for multiprocessing."""
+        pol_m = self.signal_m(theta_dict)
+        return {k: pol["waveform"] for k, pol in pol_m.items()}
+
     def log_likelihood_phase_grid(self, theta, phases=None):
         # TODO: Implement for time marginalization
         if self.phase_marginalization:
@@ -383,9 +388,14 @@ class StationaryGaussianGWLikelihood(GWSignal, Likelihood):
         
         This method significantly outperforms calling log_likelihood_phase_grid in a loop
         or with multiprocessing, by:
-        1. Computing waveforms for all samples in batch
+        1. Computing waveforms for all samples sequentially (avoids pickling overhead)
         2. Leveraging vectorized operations across both samples and phases
         3. Reducing overhead from repeated function calls
+        
+        The main performance gain comes from vectorized phase grid evaluation, not from
+        parallel waveform generation. For very large batches where waveform generation
+        dominates, consider splitting the batch and using apply_func_with_multiprocessing
+        on the split batches.
         
         Parameters
         ----------
@@ -395,8 +405,8 @@ class StationaryGaussianGWLikelihood(GWSignal, Likelihood):
         phases : array-like, optional
             Phase values to evaluate. If None, uses self.phase_grid.
         num_processes : int, optional
-            Number of parallel processes for waveform generation. For likelihood 
-            evaluation, vectorization is used instead of multiprocessing.
+            Deprecated - kept for API compatibility but not used. Waveform generation
+            is done sequentially to avoid pickling issues.
             
         Returns
         -------
@@ -432,20 +442,14 @@ class StationaryGaussianGWLikelihood(GWSignal, Likelihood):
         n_samples = len(theta_batch)
         n_phases = len(phases)
         
-        # Step 1: Compute signal_m for all samples (can use multiprocessing here)
+        # Step 1: Compute signal_m for all samples
+        # Note: We don't use multiprocessing here to avoid pickling issues.
+        # The main performance gain comes from vectorized phase grid evaluation.
         theta_phase0 = theta_batch.copy()
         theta_phase0["phase"] = 0.0
         
-        def get_signal_m_dict(theta_dict):
-            pol_m = self.signal_m(theta_dict)
-            return {k: pol["waveform"] for k, pol in pol_m.items()}
-        
-        if num_processes > 1:
-            pol_m_list = apply_func_with_multiprocessing(
-                get_signal_m_dict, theta_phase0, num_processes
-            )
-        else:
-            pol_m_list = [get_signal_m_dict(row.to_dict()) for _, row in theta_phase0.iterrows()]
+        pol_m_list = [self._get_signal_m_waveforms(row.to_dict()) 
+                      for _, row in theta_phase0.iterrows()]
         
         # Step 2: Precompute inner products for all samples
         min_idx = self.data_domain.min_idx
