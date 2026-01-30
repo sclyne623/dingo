@@ -501,30 +501,6 @@ class StationaryGaussianGWLikelihood(GWSignal, Likelihood):
         log_likelihoods = np.vstack(chunk_results)
         
         return log_likelihoods
-            
-            # Compute kappa2 components
-            kappa2_modes = {}
-            for m in m_vals:
-                mu_m = pol_m[m]
-                kappa2_modes[m] = sum(
-                    [
-                        inner_product_complex(d_ifo, mu_ifo, min_idx)
-                        for d_ifo, mu_ifo in zip(d.values(), mu_m.values())
-                    ]
-                )
-            
-            # Vectorized computation across all phases
-            rho2opt = np.full(n_phases, rho2opt_const)
-            for (m, n), c in rho2opt_crossterms.items():
-                rho2opt += (c * np.exp(-1j * (n - m) * phases)).real
-            
-            kappa2 = np.zeros(n_phases)
-            for m in m_vals:
-                kappa2 += (kappa2_modes[m] * np.exp(-1j * m * phases)).real
-            
-            log_likelihoods[sample_idx] = self.log_Zn + kappa2 - 0.5 * rho2opt
-        
-        return log_likelihoods
 
     def log_likelihood_phase_grid_reference(self, theta, phases=None):
         """
