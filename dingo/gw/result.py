@@ -594,9 +594,14 @@ class Result(CoreResult):
                 num_processes,
             )
 
-            # Directly assign to samples using boolean indexing
-            self.samples.loc[within_prior, "phase"] = new_phase
-            self.samples.loc[within_prior, "log_prob"] += delta_log_prob
+            # Initialize arrays for all samples, then fill in valid ones
+            phase_array = np.full(len(theta), 0.0)
+            phase_array[within_prior] = new_phase
+            delta_log_prob_array = np.full(len(theta), np.nan)
+            delta_log_prob_array[within_prior] = delta_log_prob
+
+            self.samples["phase"] = phase_array
+            self.samples["log_prob"] += delta_log_prob_array
 
             # Insert the phase prior in the prior, since now the phase is present.
             self.prior["phase"] = self.phase_prior
@@ -614,8 +619,10 @@ class Result(CoreResult):
                 num_processes,
             )
 
-            # Directly assign to samples using boolean indexing
-            self.samples.loc[within_prior, "log_prob"] = log_prob
+            # Initialize array for all samples, then fill in valid ones
+            log_prob_array = np.full(len(theta), np.nan)
+            log_prob_array[within_prior] = log_prob
+            self.samples["log_prob"] = log_prob_array
             del self.samples["phase"]
 
         print(f"Done. This took {time.time() - t0:.2f} s.")
