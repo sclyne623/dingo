@@ -541,7 +541,7 @@ class Result(CoreResult):
 
         # For each sample, build the posterior over phase given the remaining parameters.
         phases = np.linspace(0, 2 * np.pi, self.synthetic_phase_kwargs["n_grid"])
-        theta_valid = theta.iloc[within_prior]
+        theta_valid = theta.loc[within_prior]
 
         if approximation_22_mode:
             # For each sample, the un-normalized posterior depends only on (d | h(phase)):
