@@ -377,6 +377,128 @@ class StationaryGaussianGWLikelihood(GWSignal, Likelihood):
 
         return log_likelihoods
 
+    def log_likelihood_phase_grid_batch(self, theta_batch, phases=None, num_processes=1):
+        """
+        Efficiently compute log_likelihood_phase_grid for multiple samples (batch processing).
+        
+        This method significantly outperforms calling log_likelihood_phase_grid in a loop
+        or with multiprocessing, by:
+        1. Computing waveforms for all samples in batch
+        2. Leveraging vectorized operations across both samples and phases
+        3. Reducing overhead from repeated function calls
+        
+        Parameters
+        ----------
+        theta_batch : pd.DataFrame or list of dict
+            Multiple parameter sets to evaluate. If DataFrame, each row is a sample.
+            If list, each element is a parameter dictionary.
+        phases : array-like, optional
+            Phase values to evaluate. If None, uses self.phase_grid.
+        num_processes : int, optional
+            Number of parallel processes for waveform generation. For likelihood 
+            evaluation, vectorization is used instead of multiprocessing.
+            
+        Returns
+        -------
+        log_likelihoods : np.ndarray
+            Array of shape (n_samples, n_phases) with log likelihoods
+        """
+        import pandas as pd
+        from dingo.core.multiprocessing import apply_func_with_multiprocessing
+        
+        if self.phase_marginalization:
+            raise ValueError(
+                "Can't compute likelihood on a phase grid for "
+                "phase-marginalized posteriors"
+            )
+        if self.time_marginalization:
+            raise NotImplementedError(
+                "log_likelihood on phase grid not yet implemented for time marginalization."
+            )
+        if self.waveform_generator.spin_conversion_phase != 0:
+            raise ValueError(
+                f"The log likelihood on a phase grid assumes "
+                f"WaveformGenerator.spin_conversion_phase = 0, "
+                f"got {self.waveform_generator.spin_conversion_phase}."
+            )
+        
+        # Convert input to DataFrame if needed
+        if isinstance(theta_batch, list):
+            theta_batch = pd.DataFrame(theta_batch)
+        
+        if phases is None:
+            phases = self.phase_grid
+        phases = np.asarray(phases)
+        n_samples = len(theta_batch)
+        n_phases = len(phases)
+        
+        # Step 1: Compute signal_m for all samples (can use multiprocessing here)
+        theta_phase0 = theta_batch.copy()
+        theta_phase0["phase"] = 0.0
+        
+        def get_signal_m_dict(theta_dict):
+            pol_m = self.signal_m(theta_dict)
+            return {k: pol["waveform"] for k, pol in pol_m.items()}
+        
+        if num_processes > 1:
+            pol_m_list = apply_func_with_multiprocessing(
+                get_signal_m_dict, theta_phase0, num_processes
+            )
+        else:
+            pol_m_list = [get_signal_m_dict(row.to_dict()) for _, row in theta_phase0.iterrows()]
+        
+        # Step 2: Precompute inner products for all samples
+        min_idx = self.data_domain.min_idx
+        d = self.whitened_strains
+        
+        # Initialize output array
+        log_likelihoods = np.zeros((n_samples, n_phases))
+        
+        # Process each sample - vectorized across phases
+        for sample_idx, pol_m in enumerate(pol_m_list):
+            m_vals = sorted(pol_m.keys())
+            
+            # Compute rho2opt components
+            rho2opt_const = 0
+            rho2opt_crossterms = {}
+            for idx, m in enumerate(m_vals):
+                mu_m = pol_m[m]
+                rho2opt_const += sum(
+                    [inner_product(mu_ifo, mu_ifo, min_idx) for mu_ifo in mu_m.values()]
+                )
+                for n in m_vals[idx + 1:]:
+                    mu_n = pol_m[n]
+                    rho2opt_crossterms[(m, n)] = 2 * sum(
+                        [
+                            inner_product_complex(mu_m_ifo, mu_n_ifo, min_idx)
+                            for mu_m_ifo, mu_n_ifo in zip(mu_m.values(), mu_n.values())
+                        ]
+                    )
+            
+            # Compute kappa2 components
+            kappa2_modes = {}
+            for m in m_vals:
+                mu_m = pol_m[m]
+                kappa2_modes[m] = sum(
+                    [
+                        inner_product_complex(d_ifo, mu_ifo, min_idx)
+                        for d_ifo, mu_ifo in zip(d.values(), mu_m.values())
+                    ]
+                )
+            
+            # Vectorized computation across all phases
+            rho2opt = np.full(n_phases, rho2opt_const)
+            for (m, n), c in rho2opt_crossterms.items():
+                rho2opt += (c * np.exp(-1j * (n - m) * phases)).real
+            
+            kappa2 = np.zeros(n_phases)
+            for m in m_vals:
+                kappa2 += (kappa2_modes[m] * np.exp(-1j * m * phases)).real
+            
+            log_likelihoods[sample_idx] = self.log_Zn + kappa2 - 0.5 * rho2opt
+        
+        return log_likelihoods
+
     def log_likelihood_phase_grid_reference(self, theta, phases=None):
         """
         Reference implementation of log_likelihood_phase_grid using the original

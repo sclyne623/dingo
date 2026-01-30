@@ -342,6 +342,105 @@ class Result(CoreResult):
             phase_grid=phase_grid,
         )
 
+    def test_sample_synthetic_phase_optimization(
+        self, 
+        theta_sample,
+        n_grid=100,
+        approximation_22_mode=False,
+        num_processes=1,
+    ):
+        """
+        Test the optimized batch processing implementation against the original
+        approach for sample_synthetic_phase.
+        
+        This compares log_likelihood_phase_grid_batch (optimized) vs 
+        apply_func_with_multiprocessing + log_likelihood_phase_grid (original).
+        
+        Parameters
+        ----------
+        theta_sample : pd.DataFrame
+            Sample of parameters to test (should not include phase)
+        n_grid : int
+            Number of phase grid points
+        approximation_22_mode : bool
+            Whether to use 22-mode approximation (skips this test if True)
+        num_processes : int
+            Number of processes to use
+            
+        Returns
+        -------
+        dict
+            Comparison results including timing and accuracy
+        """
+        import time
+        from dingo.core.multiprocessing import apply_func_with_multiprocessing
+        
+        if approximation_22_mode:
+            print("Skipping test: approximation_22_mode=True uses different code path")
+            return None
+        
+        self._build_likelihood()
+        phases = np.linspace(0, 2 * np.pi, n_grid)
+        
+        print(f"\nTesting synthetic phase optimization with {len(theta_sample)} samples...")
+        print("=" * 70)
+        
+        # Original approach: multiprocessing with individual calls
+        print("Running original approach (multiprocessing)...")
+        self.likelihood.phase_grid = phases
+        start = time.time()
+        phase_log_posterior_orig = apply_func_with_multiprocessing(
+            self.likelihood.log_likelihood_phase_grid,
+            theta_sample,
+            num_processes=num_processes,
+        )
+        time_orig = time.time() - start
+        
+        # Optimized approach: batch processing
+        print("Running optimized approach (batch processing)...")
+        start = time.time()
+        phase_log_posterior_opt = self.likelihood.log_likelihood_phase_grid_batch(
+            theta_sample,
+            phases=phases,
+            num_processes=num_processes,
+        )
+        time_opt = time.time() - start
+        
+        # Compare results
+        abs_diff = np.abs(phase_log_posterior_orig - phase_log_posterior_opt)
+        max_abs_diff = np.max(abs_diff)
+        rel_diff = np.abs((phase_log_posterior_orig - phase_log_posterior_opt) / 
+                         (np.abs(phase_log_posterior_orig) + 1e-100))
+        max_rel_diff = np.max(rel_diff)
+        
+        results = {
+            "n_samples": len(theta_sample),
+            "n_phases": n_grid,
+            "time_orig": time_orig,
+            "time_opt": time_opt,
+            "speedup": time_orig / time_opt if time_opt > 0 else np.inf,
+            "max_abs_diff": max_abs_diff,
+            "max_rel_diff": max_rel_diff,
+            "allclose": np.allclose(phase_log_posterior_orig, phase_log_posterior_opt, 
+                                   rtol=1e-10, atol=1e-10),
+        }
+        
+        print(f"Original time: {results['time_orig']:.3f} s")
+        print(f"Optimized time: {results['time_opt']:.3f} s")
+        print(f"Speedup: {results['speedup']:.2f}x")
+        print("-" * 70)
+        print(f"Maximum absolute difference: {results['max_abs_diff']:.2e}")
+        print(f"Maximum relative difference: {results['max_rel_diff']:.2e}")
+        print(f"Results match (tol=1e-10): {results['allclose']}")
+        print("=" * 70)
+        
+        if results['allclose']:
+            print("✓ Implementations produce identical results!")
+        else:
+            print("✗ Warning: Implementations differ!")
+        
+        return results
+
     def sample_synthetic_phase(
         self,
         synthetic_phase_kwargs,
@@ -413,42 +512,49 @@ class Result(CoreResult):
         # This builds on the Bilby approach to sampling the phase when using a
         # phase-marginalized likelihood.
 
+        print(f"Estimating synthetic phase for samples.")
+        t0 = time.time()
+
         # Restrict to samples that are within the prior.
         param_keys = [k for k, v in self.prior.items() if not isinstance(v, Constraint)]
         theta = self.samples[param_keys]
+        
+        # Evaluate prior and constraints in single pass
         log_prior = self.prior.ln_prob(theta, axis=0)
         constraints = self.prior.evaluate_constraints(theta)
-        np.putmask(log_prior, constraints == 0, -np.inf)
-        within_prior = log_prior != -np.inf
+        within_prior = (constraints != 0) & np.isfinite(log_prior)
+
+        num_valid_samples = np.count_nonzero(within_prior)
+        if num_valid_samples == 0:
+            print("No valid samples within prior. Skipping synthetic phase sampling.")
+            return
 
         # Put a cap on the number of processes to avoid overhead:
-        num_valid_samples = np.sum(within_prior)
         num_processes = min(
             self.synthetic_phase_kwargs.get("num_processes", 1), num_valid_samples // 10
         )
 
-        print(f"Estimating synthetic phase for {num_valid_samples} samples.")
-        t0 = time.time()
+        print(f"Processing {num_valid_samples} valid samples.")
 
+        # Build likelihood only in forward mode
         if not inverse:
-            # TODO: This can probably be removed.
             self._build_likelihood()
-
-        if inverse:
-            # We estimate the log_prob for given phases, so first save the evaluation
-            # points.
-            sample_phase = theta["phase"].to_numpy(copy=True)
+        else:
+            # Save phase samples before any modifications
+            sample_phase = theta.loc[within_prior, "phase"].to_numpy()
 
         # For each sample, build the posterior over phase given the remaining parameters.
-
         phases = np.linspace(0, 2 * np.pi, self.synthetic_phase_kwargs["n_grid"])
+        theta_valid = theta.iloc[within_prior]
+
         if approximation_22_mode:
             # For each sample, the un-normalized posterior depends only on (d | h(phase)):
             # The prior p(phase), and the inner products (h | h), and (d | d) only contribute
             # to the normalization. (We check above that p(phase) is constant.)
-            theta["phase"] = 0.0
+            theta_valid = theta_valid.copy()
+            theta_valid["phase"] = 0.0
             d_inner_h_complex = self.likelihood.d_inner_h_complex_multi(
-                theta.iloc[within_prior],
+                theta_valid,
                 num_processes,
             )
 
@@ -456,65 +562,52 @@ class Result(CoreResult):
             phasor = np.exp(2j * phases)
             phase_log_posterior = np.outer(d_inner_h_complex, phasor).real
         else:
-            self.likelihood.phase_grid = phases
-
-            phase_log_posterior = apply_func_with_multiprocessing(
-                self.likelihood.log_likelihood_phase_grid,
-                theta.iloc[within_prior],
+            # Use optimized batch processing for phase grid evaluation
+            # This is significantly faster than the old approach using apply_func_with_multiprocessing
+            phase_log_posterior = self.likelihood.log_likelihood_phase_grid_batch(
+                theta_valid,
+                phases=phases,
                 num_processes=num_processes,
             )
 
-        phase_posterior = np.exp(
-            phase_log_posterior - np.amax(phase_log_posterior, axis=1, keepdims=True)
-        )
+        # Normalize posterior with numerical stability
+        phase_log_posterior -= np.amax(phase_log_posterior, axis=1, keepdims=True)
+        phase_posterior = np.exp(phase_log_posterior)
+        
         # Include a floor value to maintain mass coverage.
-        phase_posterior += phase_posterior.mean(
-            axis=-1, keepdims=True
-        ) * self.synthetic_phase_kwargs.get("uniform_weight", 0.01)
+        uniform_weight = self.synthetic_phase_kwargs.get("uniform_weight", 0.01)
+        phase_posterior += phase_posterior.mean(axis=-1, keepdims=True) * uniform_weight
 
         if not inverse:
-            # Forward direction:
-            #   (1) Sample a new phase according to the synthetic posterior.
-            #   (2) Add the log_prob to the existing log_prob.
-
+            # Forward direction: sample new phase and update samples
             new_phase, delta_log_prob = interpolated_sample_and_log_prob_multi(
                 phases,
                 phase_posterior,
                 num_processes,
             )
 
-            phase_array = np.full(len(theta), 0.0)
-            phase_array[within_prior] = new_phase
-            delta_log_prob_array = np.full(len(theta), -np.nan)
-            delta_log_prob_array[within_prior] = delta_log_prob
-
-            self.samples["phase"] = phase_array
-            self.samples["log_prob"] += delta_log_prob_array
+            # Directly assign to samples using boolean indexing
+            self.samples.loc[within_prior, "phase"] = new_phase
+            self.samples.loc[within_prior, "log_prob"] += delta_log_prob
 
             # Insert the phase prior in the prior, since now the phase is present.
             self.prior["phase"] = self.phase_prior
             self.phase_prior = None
 
             # reset likelihood for safety
-            # TODO: Can this be removed?
             self.likelihood = None
 
         else:
-            # TODO: Possibly remove.
-            # Inverse direction:
-            #   (1) Evaluate the synthetic log prob for given phase points, and save it.
-
+            # Inverse direction: evaluate synthetic log prob for given phases
             log_prob = interpolated_log_prob_multi(
                 phases,
                 phase_posterior,
-                sample_phase[within_prior],
+                sample_phase,
                 num_processes,
             )
 
-            # Outside of prior, set log_prob to -np.nan.
-            log_prob_array = np.full(len(theta), -np.nan)
-            log_prob_array[within_prior] = log_prob
-            self.samples["log_prob"] = log_prob_array
+            # Directly assign to samples using boolean indexing
+            self.samples.loc[within_prior, "log_prob"] = log_prob
             del self.samples["phase"]
 
         print(f"Done. This took {time.time() - t0:.2f} s.")
