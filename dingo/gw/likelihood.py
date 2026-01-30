@@ -382,20 +382,50 @@ class StationaryGaussianGWLikelihood(GWSignal, Likelihood):
 
         return log_likelihoods
 
-    def log_likelihood_phase_grid_batch(self, theta_batch, phases=None, num_processes=1):
+    def log_likelihood_phase_grid_chunk(self, theta_chunk, phases):
         """
-        Efficiently compute log_likelihood_phase_grid for multiple samples (batch processing).
+        Process a chunk of samples with vectorized phase grid evaluation.
         
-        This method significantly outperforms calling log_likelihood_phase_grid in a loop
-        or with multiprocessing, by:
-        1. Computing waveforms for all samples sequentially (avoids pickling overhead)
-        2. Leveraging vectorized operations across both samples and phases
-        3. Reducing overhead from repeated function calls
+        This is a helper method for log_likelihood_phase_grid_batch_chunked.
+        It processes a small chunk of samples sequentially, using vectorized
+        phase evaluation for each sample.
         
-        The main performance gain comes from vectorized phase grid evaluation, not from
-        parallel waveform generation. For very large batches where waveform generation
-        dominates, consider splitting the batch and using apply_func_with_multiprocessing
-        on the split batches.
+        Parameters
+        ----------
+        theta_chunk : pd.DataFrame
+            A chunk of parameter samples
+        phases : np.ndarray
+            Phase grid to evaluate
+            
+        Returns
+        -------
+        np.ndarray
+            Log likelihoods of shape (n_samples_in_chunk, n_phases)
+        """
+        n_samples = len(theta_chunk)
+        n_phases = len(phases)
+        log_likelihoods = np.zeros((n_samples, n_phases))
+        
+        for idx, (_, row) in enumerate(theta_chunk.iterrows()):
+            theta = row.to_dict()
+            log_likelihoods[idx] = self.log_likelihood_phase_grid(theta, phases)
+        
+        return log_likelihoods
+
+    def log_likelihood_phase_grid_batch(self, theta_batch, phases=None, num_processes=1, chunk_size=100):
+        """
+        Efficiently compute log_likelihood_phase_grid for multiple samples using chunked
+        parallel processing.
+        
+        This hybrid approach combines:
+        1. Chunking: Split samples into manageable chunks (controlled by chunk_size)
+        2. Parallelization: Process chunks in parallel (controlled by num_processes)
+        3. Vectorization: Use vectorized phase grid evaluation within each chunk
+        
+        This provides the best balance of:
+        - Memory efficiency (only process one chunk at a time per worker)
+        - CPU parallelization (multiple workers process different chunks)
+        - Vectorization speedup (vectorized phase evaluation per sample)
         
         Parameters
         ----------
@@ -405,8 +435,10 @@ class StationaryGaussianGWLikelihood(GWSignal, Likelihood):
         phases : array-like, optional
             Phase values to evaluate. If None, uses self.phase_grid.
         num_processes : int, optional
-            Deprecated - kept for API compatibility but not used. Waveform generation
-            is done sequentially to avoid pickling issues.
+            Number of parallel processes. Default is 1 (sequential).
+        chunk_size : int, optional
+            Number of samples per chunk. Smaller chunks use less memory but have
+            more overhead. Default is 100. Adjust based on your memory constraints.
             
         Returns
         -------
@@ -439,45 +471,36 @@ class StationaryGaussianGWLikelihood(GWSignal, Likelihood):
         if phases is None:
             phases = self.phase_grid
         phases = np.asarray(phases)
+        
         n_samples = len(theta_batch)
-        n_phases = len(phases)
         
-        # Step 1: Compute signal_m for all samples
-        # Note: We don't use multiprocessing here to avoid pickling issues.
-        # The main performance gain comes from vectorized phase grid evaluation.
-        theta_phase0 = theta_batch.copy()
-        theta_phase0["phase"] = 0.0
+        # Split into chunks
+        chunks = []
+        for i in range(0, n_samples, chunk_size):
+            chunk = theta_batch.iloc[i:i+chunk_size].copy()
+            chunks.append(chunk)
         
-        pol_m_list = [self._get_signal_m_waveforms(row.to_dict()) 
-                      for _, row in theta_phase0.iterrows()]
-        
-        # Step 2: Precompute inner products for all samples
-        min_idx = self.data_domain.min_idx
-        d = self.whitened_strains
-        
-        # Initialize output array
-        log_likelihoods = np.zeros((n_samples, n_phases))
-        
-        # Process each sample - vectorized across phases
-        for sample_idx, pol_m in enumerate(pol_m_list):
-            m_vals = sorted(pol_m.keys())
+        # Process chunks (with or without parallelization)
+        if num_processes > 1 and len(chunks) > 1:
+            # Parallel processing of chunks using multiprocessing.Pool directly
+            from multiprocessing import Pool
+            from threadpoolctl import threadpool_limits
             
-            # Compute rho2opt components
-            rho2opt_const = 0
-            rho2opt_crossterms = {}
-            for idx, m in enumerate(m_vals):
-                mu_m = pol_m[m]
-                rho2opt_const += sum(
-                    [inner_product(mu_ifo, mu_ifo, min_idx) for mu_ifo in mu_m.values()]
-                )
-                for n in m_vals[idx + 1:]:
-                    mu_n = pol_m[n]
-                    rho2opt_crossterms[(m, n)] = 2 * sum(
-                        [
-                            inner_product_complex(mu_m_ifo, mu_n_ifo, min_idx)
-                            for mu_m_ifo, mu_n_ifo in zip(mu_m.values(), mu_n.values())
-                        ]
-                    )
+            with threadpool_limits(limits=1, user_api="blas"):
+                with Pool(processes=min(num_processes, len(chunks))) as pool:
+                    # Use partial to pass phases as a fixed argument
+                    from functools import partial
+                    process_func = partial(self.log_likelihood_phase_grid_chunk, phases=phases)
+                    chunk_results = pool.map(process_func, chunks)
+        else:
+            # Sequential processing
+            chunk_results = [self.log_likelihood_phase_grid_chunk(chunk, phases) 
+                           for chunk in chunks]
+        
+        # Concatenate results
+        log_likelihoods = np.vstack(chunk_results)
+        
+        return log_likelihoods
             
             # Compute kappa2 components
             kappa2_modes = {}

@@ -347,12 +347,14 @@ class Result(CoreResult):
         theta_sample,
         n_grid=100,
         approximation_22_mode=False,
+        num_processes=1,
+        chunk_size=100,
     ):
         """
-        Test the optimized batch processing implementation against the original
+        Test the optimized chunked batch processing implementation against the original
         approach for sample_synthetic_phase.
         
-        This compares log_likelihood_phase_grid_batch (optimized) vs 
+        This compares log_likelihood_phase_grid_batch (chunked + vectorized) vs 
         apply_func_with_multiprocessing + log_likelihood_phase_grid (original).
         
         Parameters
@@ -363,6 +365,10 @@ class Result(CoreResult):
             Number of phase grid points
         approximation_22_mode : bool
             Whether to use 22-mode approximation (skips this test if True)
+        num_processes : int
+            Number of processes to use for parallel chunk processing
+        chunk_size : int
+            Number of samples per chunk (controls memory usage)
             
         Returns
         -------
@@ -380,10 +386,11 @@ class Result(CoreResult):
         phases = np.linspace(0, 2 * np.pi, n_grid)
         
         print(f"\nTesting synthetic phase optimization with {len(theta_sample)} samples...")
+        print(f"  num_processes={num_processes}, chunk_size={chunk_size}")
         print("=" * 70)
         
         # Original approach: multiprocessing with individual calls
-        print("Running original approach (multiprocessing)...")
+        print("Running original approach (multiprocessing per sample)...")
         self.likelihood.phase_grid = phases
         start = time.time()
         phase_log_posterior_orig = apply_func_with_multiprocessing(
@@ -393,12 +400,14 @@ class Result(CoreResult):
         )
         time_orig = time.time() - start
         
-        # Optimized approach: batch processing
-        print("Running optimized approach (batch processing)...")
+        # Optimized approach: chunked batch processing
+        print("Running optimized approach (chunked + vectorized)...")
         start = time.time()
         phase_log_posterior_opt = self.likelihood.log_likelihood_phase_grid_batch(
             theta_sample,
             phases=phases,
+            num_processes=num_processes,
+            chunk_size=chunk_size,
         )
         time_opt = time.time() - start
         
@@ -558,13 +567,15 @@ class Result(CoreResult):
             phasor = np.exp(2j * phases)
             phase_log_posterior = np.outer(d_inner_h_complex, phasor).real
         else:
-            # Use optimized batch processing for phase grid evaluation
-            # This is significantly faster than the old approach using apply_func_with_multiprocessing
-            # Note: num_processes is not passed here as waveform generation is sequential
-            # to avoid pickling issues. The speedup comes from vectorized phase evaluation.
+            # Use optimized chunked batch processing for phase grid evaluation
+            # This combines parallelization across chunks with vectorized phase evaluation
+            # chunk_size controls memory usage (smaller = less memory, more overhead)
+            chunk_size = self.synthetic_phase_kwargs.get("chunk_size", 100)
             phase_log_posterior = self.likelihood.log_likelihood_phase_grid_batch(
                 theta_valid,
                 phases=phases,
+                num_processes=num_processes,
+                chunk_size=chunk_size,
             )
 
         # Normalize posterior with numerical stability
