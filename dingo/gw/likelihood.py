@@ -348,9 +348,100 @@ class StationaryGaussianGWLikelihood(GWSignal, Likelihood):
                 ]
             )
 
+        # Vectorized computation over all phases
+        phases_array = np.asarray(phases)
+        
+        # Compute rho2opt for all phases at once
+        # Start with constant term
+        rho2opt = np.full(len(phases), rho2opt_const)
+        
+        # Add cross terms using vectorized operations
+        for (m, n), c in rho2opt_crossterms.items():
+            # Shape: (n_phases,)
+            rho2opt += (c * np.exp(-1j * (n - m) * phases_array)).real
+        
+        # Compute kappa2 for all phases at once
+        kappa2 = np.zeros(len(phases))
+        for m in m_vals:
+            # Shape: (n_phases,)
+            kappa2 += (kappa2_modes[m] * np.exp(-1j * m * phases_array)).real
+        
+        # Compute log likelihoods for all phases
+        log_likelihoods = self.log_Zn + kappa2 - 0.5 * rho2opt
+
+        # # Test that this works:
+        # idx = len(phases) // 3
+        # phase = phases[idx]
+        # log_likelihood_ref = self.log_likelihood({**theta, "phase": phase})
+        # print(log_likelihoods[idx] - log_likelihood_ref)
+
+        return log_likelihoods
+
+    def log_likelihood_phase_grid_reference(self, theta, phases=None):
+        """
+        Reference implementation of log_likelihood_phase_grid using the original
+        loop-based approach. Kept for testing and validation purposes.
+        
+        This method should produce identical results to log_likelihood_phase_grid
+        but is significantly slower for large phase grids.
+        """
+        if self.phase_marginalization:
+            raise ValueError(
+                "Can't compute likelihood on a phase grid for "
+                "phase-marginalized posteriors"
+            )
+        if self.time_marginalization:
+            raise NotImplementedError(
+                "log_likelihood on phase grid not yet implemented."
+            )
+
+        if self.waveform_generator.spin_conversion_phase != 0:
+            raise ValueError(
+                f"The log likelihood on a phase grid assumes "
+                f"WaveformGenerator.spin_conversion_phase = 0, "
+                f"got {self.waveform_generator.spin_conversion_phase}."
+            )
+
+        d = self.whitened_strains
+        if phases is None:
+            phases = self.phase_grid
+
+        # Step 1: Compute signal for phase = 0
+        pol_m = self.signal_m({**theta, "phase": 0})
+        pol_m = {k: pol["waveform"] for k, pol in pol_m.items()}
+
+        # Step 2: Precompute inner products
+        min_idx = self.data_domain.min_idx
+        m_vals = sorted(pol_m.keys())
+
+        rho2opt_const = 0
+        rho2opt_crossterms = {}
+        for idx, m in enumerate(m_vals):
+            mu_m = pol_m[m]
+            rho2opt_const += sum(
+                [inner_product(mu_ifo, mu_ifo, min_idx) for mu_ifo in mu_m.values()]
+            )
+            for n in m_vals[idx + 1 :]:
+                mu_n = pol_m[n]
+                rho2opt_crossterms[(m, n)] = 2 * sum(
+                    [
+                        inner_product_complex(mu_m_ifo, mu_n_ifo, min_idx)
+                        for mu_m_ifo, mu_n_ifo in zip(mu_m.values(), mu_n.values())
+                    ]
+                )
+
+        kappa2_modes = {}
+        for m in m_vals:
+            mu_m = pol_m[m]
+            kappa2_modes[m] = sum(
+                [
+                    inner_product_complex(d_ifo, mu_ifo, min_idx)
+                    for d_ifo, mu_ifo in zip(d.values(), mu_m.values())
+                ]
+            )
+
+        # Original loop-based implementation
         log_likelihoods = np.ones(len(phases))
-        kappa2_all = []
-        rho2opt_all = []
         for idx, phase in enumerate(phases):
             # get rho2opt
             rho2opt = rho2opt_const
@@ -360,30 +451,82 @@ class StationaryGaussianGWLikelihood(GWSignal, Likelihood):
             kappa2 = 0
             for m in m_vals:
                 kappa2 += (kappa2_modes[m] * np.exp(-1j * m * phase)).real
-            rho2opt_all.append(rho2opt)
-            kappa2_all.append(kappa2)
 
             log_likelihoods[idx] = self.log_Zn + kappa2 - 1 / 2.0 * rho2opt
 
-            # # comment out for cross check:
-            # mu = sum_contributions_m(pol_m, phase_shift=phase)
-            # rho2opt_ref = sum([inner_product(mu_ifo, mu_ifo) for mu_ifo in mu.values()])
-            # kappa2_ref = sum(
-            #     [
-            #         inner_product(d_ifo, mu_ifo)
-            #         for d_ifo, mu_ifo in zip(d.values(), mu.values())
-            #     ]
-            # )
-            # assert rho2opt - rho2opt_ref < 1e-10
-            # assert kappa2 - kappa2_ref < 1e-10
-
-        # # Test that this works:
-        # idx = len(phases) // 3
-        # phase = phases[idx]
-        # log_likelihood_ref = self.log_likelihood({**theta, "phase": phase})
-        # print(log_likelihoods[idx] - log_likelihood_ref)
-
         return log_likelihoods
+
+    def test_phase_grid_implementations(self, theta, phases=None, verbose=True):
+        """
+        Test that the optimized and reference implementations of log_likelihood_phase_grid
+        produce identical results.
+        
+        Parameters
+        ----------
+        theta : dict
+            Parameter dictionary
+        phases : array-like, optional
+            Phase values to test. If None, uses self.phase_grid or creates a default grid.
+        verbose : bool
+            Whether to print detailed comparison results
+            
+        Returns
+        -------
+        dict
+            Dictionary with comparison results including timing and accuracy metrics
+        """
+        import time
+        
+        if phases is None:
+            phases = self.phase_grid if hasattr(self, 'phase_grid') and self.phase_grid is not None else np.linspace(0, 2*np.pi, 50)
+        
+        # Time reference implementation
+        start = time.time()
+        log_like_ref = self.log_likelihood_phase_grid_reference(theta, phases)
+        time_ref = time.time() - start
+        
+        # Time optimized implementation
+        start = time.time()
+        log_like_opt = self.log_likelihood_phase_grid(theta, phases)
+        time_opt = time.time() - start
+        
+        # Compute differences
+        abs_diff = np.abs(log_like_ref - log_like_opt)
+        max_abs_diff = np.max(abs_diff)
+        rel_diff = np.abs((log_like_ref - log_like_opt) / (np.abs(log_like_ref) + 1e-100))
+        max_rel_diff = np.max(rel_diff)
+        
+        results = {
+            "log_like_ref": log_like_ref,
+            "log_like_opt": log_like_opt,
+            "time_ref": time_ref,
+            "time_opt": time_opt,
+            "speedup": time_ref / time_opt if time_opt > 0 else np.inf,
+            "max_abs_diff": max_abs_diff,
+            "max_rel_diff": max_rel_diff,
+            "allclose": np.allclose(log_like_ref, log_like_opt, rtol=1e-10, atol=1e-10),
+            "n_phases": len(phases),
+        }
+        
+        if verbose:
+            print("\n" + "=" * 70)
+            print("Log Likelihood Phase Grid Implementation Comparison")
+            print("=" * 70)
+            print(f"Number of phase points: {results['n_phases']}")
+            print(f"Reference implementation: {results['time_ref']:.4f} s")
+            print(f"Optimized implementation: {results['time_opt']:.4f} s")
+            print(f"Speedup: {results['speedup']:.2f}x")
+            print("-" * 70)
+            print(f"Maximum absolute difference: {results['max_abs_diff']:.2e}")
+            print(f"Maximum relative difference: {results['max_rel_diff']:.2e}")
+            print(f"Results match (tol=1e-10): {results['allclose']}")
+            print("=" * 70)
+            if results['allclose']:
+                print("✓ Implementations produce identical results!")
+            else:
+                print("✗ Warning: Implementations differ!")
+        
+        return results
 
     def _log_likelihood_phase_marginalized(self, theta):
         """
