@@ -216,7 +216,7 @@ class TestProcessTransfer:
         self.f_min = 5e-4
         self.detector_type = "TDIAET"
         self.LISAconst = True
-        self.responseapprox = 1
+        self.responseapprox = "approx1"  # String enum name expected by lisabeta
         self.frozenLISA = True
         self.TDIrescaled = False
     
