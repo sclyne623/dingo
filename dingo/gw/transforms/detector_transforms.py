@@ -413,12 +413,17 @@ class ProjectOntoSpaceDetectors(object):
                     sample["waveform"][lm]["Chan3"] = chan3_mode
             else:
                 # OPTIMIZED BATCH PROCESSING
+                # Check if we're in a DataLoader worker (daemon process)
+                # Daemon processes can't spawn children, so disable multiprocessing
+                import multiprocessing
+                in_worker = multiprocessing.current_process().daemon
+                
                 # Instead of list comprehension, use Pool for CPU-bound tasks
                 # Only use multiprocessing for large batches to avoid overhead
                 batch_size = len(inc)
                 
-                # For small batches, sequential processing is faster due to overhead
-                use_parallel = batch_size > 4  # Tunable threshold
+                # For small batches or when in DataLoader worker, use sequential processing
+                use_parallel = (batch_size > 4) and not in_worker
                 
                 if use_parallel:
                     # Prepare arguments for parallel processing
