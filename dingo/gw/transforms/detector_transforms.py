@@ -119,8 +119,8 @@ def interpolate_complex_array(freq_grid, complex_data, interp_freqs):
         Interpolated complex array
     """
     # Extract real and imaginary parts without copying
-    real_part = complex_data.real
-    imag_part = complex_data.imag
+        real_part = np.ascontiguousarray(complex_data.real)
+        imag_part = np.ascontiguousarray(complex_data.imag)
     
     # Create splines and evaluate in one go
     spline_real = pyspline.CubicSpline(freq_grid, real_part).get_spline()
@@ -195,8 +195,9 @@ def process_transfer(freq_grid, amp, phase, tf, t0, l, m, inc, phi, lambd, beta,
     
     # Interpolate phase with delay correction
     phasetot = phase + phaseRdelay
-    spline_phase = pyspline.CubicSpline(freq_grid, phasetot).get_spline()
-    phase_interp = pyspline.spline_eval_vector(spline_phase, interp_freqs, extrapol_zero=True)
+        phasetot = np.ascontiguousarray(np.asarray(phasetot, dtype=np.float64))
+        spline_phase = pyspline.CubicSpline(freq_grid, phasetot).get_spline()
+        phase_interp = pyspline.spline_eval_vector(spline_phase, interp_freqs, extrapol_zero=True)
     
     # Apply phase to get final complex strain
     eiphase = np.exp(1j * phase_interp)
