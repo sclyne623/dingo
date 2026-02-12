@@ -215,7 +215,7 @@ class TestProcessTransfer:
         self.interp_freqs = np.linspace(1e-4, 1e-1, 1024)
         self.f_min = 5e-4
         self.detector_type = "TDIAET"
-        self.LISAconst = True
+        self.LISAconst = "Proposal"
         self.responseapprox = "full"
         self.frozenLISA = True
         self.TDIrescaled = False

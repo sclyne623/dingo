@@ -204,7 +204,7 @@ def main():
     domain = build_domain(domain_dict)
     
     lisa_settings = {
-        'LISAconst': True,
+        'LISAconst': "Proposal",
         'responseapprox': "full",
         'frozenLISA': True,
         'TDIrescaled': False,
