@@ -376,7 +376,7 @@ class ProjectOntoSpaceDetectors(object):
             else:
                 # Use broadcasting to scale all waveforms at once
                 # This is much faster than the previous for loop
-                sample["waveform"][lm]["amp"] = sample["waveform"][lm]["amp"] * d_ratio 
+                sample["waveform"][lm]["amp"] = sample["waveform"][lm]["amp"] * d_ratio.ravel() 
             
             
             #l = lm[0]
