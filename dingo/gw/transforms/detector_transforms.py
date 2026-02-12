@@ -374,9 +374,9 @@ class ProjectOntoSpaceDetectors(object):
             if np.isscalar(d_ratio) or (isinstance(d_ratio, np.ndarray) and d_ratio.size == 1):
                 sample["waveform"][lm]["amp"] = sample["waveform"][lm]["amp"] * d_ratio
             else:
-                # Use broadcasting to scale all waveforms at once
-                # This is much faster than the previous for loop
-                sample["waveform"][lm]["amp"] = sample["waveform"][lm]["amp"] * d_ratio.ravel() 
+                # Batch case: need to iterate since amp is a list of arrays
+                for i in range(len(d_ratio)):
+                    sample["waveform"][lm]["amp"][i] = sample["waveform"][lm]["amp"][i] * d_ratio[i] 
             
             
             #l = lm[0]
