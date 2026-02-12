@@ -205,7 +205,7 @@ def main():
     
     lisa_settings = {
         'LISAconst': True,
-        'responseapprox': 1,
+        'responseapprox': "full",
         'frozenLISA': True,
         'TDIrescaled': False,
     }
