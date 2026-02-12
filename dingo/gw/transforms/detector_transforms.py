@@ -195,9 +195,9 @@ def process_transfer(freq_grid, amp, phase, tf, t0, l, m, inc, phi, lambd, beta,
     
     # Interpolate phase with delay correction
     phasetot = phase + phaseRdelay
-        phasetot = np.ascontiguousarray(np.asarray(phasetot, dtype=np.float64))
-        spline_phase = pyspline.CubicSpline(freq_grid, phasetot).get_spline()
-        phase_interp = pyspline.spline_eval_vector(spline_phase, interp_freqs, extrapol_zero=True)
+    phasetot = np.ascontiguousarray(np.asarray(phasetot, dtype=np.float64))
+    spline_phase = pyspline.CubicSpline(freq_grid, phasetot).get_spline()
+    phase_interp = pyspline.spline_eval_vector(spline_phase, interp_freqs, extrapol_zero=True)
     
     # Apply phase to get final complex strain
     eiphase = np.exp(1j * phase_interp)
