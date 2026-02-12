@@ -118,9 +118,9 @@ def interpolate_complex_array(freq_grid, complex_data, interp_freqs):
     np.ndarray
         Interpolated complex array
     """
-    # Extract real and imaginary parts without copying
-        real_part = np.ascontiguousarray(complex_data.real)
-        imag_part = np.ascontiguousarray(complex_data.imag)
+    # Extract real and imaginary parts and ensure C-contiguous
+    real_part = np.ascontiguousarray(complex_data.real)
+    imag_part = np.ascontiguousarray(complex_data.imag)
     
     # Create splines and evaluate in one go
     spline_real = pyspline.CubicSpline(freq_grid, real_part).get_spline()
