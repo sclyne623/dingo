@@ -37,6 +37,15 @@ import lisabeta.waveforms.bbh.pyIMRPhenomHM as pyIMRPhenomHM
 import lisabeta.waveforms.bbh.pyIMRPhenomD as pyIMRPhenomD
 import lisabeta.tools.pytools as pytools
 
+# BBHx imports for LISA gravitational wave waveforms
+try:
+    from bbhx.waveformbuild import BBHWaveformFD
+    from bbhx.waveforms.phenomhm import PhenomHMAmpPhase
+    from bbhx.response.fastfdresponse import LISATDIResponse
+    from bbhx.utils.constants import PC_SI, YRSID_SI
+except ImportError:
+    pass  # BBHx not installed
+
 
 
 class WaveformGenerator:
@@ -1922,3 +1931,217 @@ class LISAWaveformGenerator:
             gridfreq = gridfreqClass.get_freq()
 
         return gridfreq
+
+
+class BBHxWaveformGenerator:
+    """Generate Amplitude/Phase waveforms using BBHx (GPU-accelerated MBHB waveforms) in the specified
+    domain for a single GW coalescence given a set of waveform parameters.
+    
+    This class provides GPU-accelerated waveform generation for massive black hole binaries (MBHBs)
+    as observed by LISA, using the BBHx package.
+    """
+
+    def __init__(
+        self,
+        approximant: str,
+        domain: Domain,
+        f_ref: float,
+        f_start: float = None,
+        mode_list: list[Tuple] = None,
+        transform=None,
+        spin_conversion_phase=None,
+        frozenLISA=False,
+        use_gpu=False,
+        **kwargs,
+    ):
+        """
+        Parameters
+        ----------
+        approximant : str
+            Waveform approximant string. For BBHx this should be 'PhenomHM'.
+        domain : Domain
+            Domain object that specifies on which physical domain the
+            waveform polarizations will be generated (frequency domain, time domain, etc.)
+        f_ref : float
+            Reference frequency for the waveforms (Hz)
+        f_start : float, optional
+            Starting frequency for waveform generation (Hz)
+        mode_list : List[Tuple], optional
+            A list of waveform (ell, m) modes to include when generating the polarizations.
+        spin_conversion_phase : float, optional
+            Phase value for spin parameter conversions
+        frozenLISA : bool, optional
+            Whether to keep detector arms fixed. Default is False.
+        use_gpu : bool, optional
+            Whether to use GPU acceleration. Default is False.
+        """
+        if not isinstance(approximant, str):
+            raise ValueError("approximant should be a string, but got", approximant)
+        else:
+            self.approximant_str = approximant
+    
+        if not issubclass(type(domain), Domain):
+            raise ValueError(
+                "domain should be an instance of a subclass of Domain, but got",
+                type(domain),
+            )
+        else:
+            self.domain = domain
+
+        self.f_ref = f_ref
+        self.f_start = f_start
+        self.mode_list = mode_list if mode_list is not None else [(2,2), (2,1), (3,3), (3,2), (4,4), (4,3)]
+        self.transform = transform
+        self.frozenLISA = frozenLISA
+        self.use_gpu = use_gpu
+        
+        # Initialize BBHx waveform generator
+        try:
+            self.waveform_gen = BBHWaveformFD(
+                amp_phase_kwargs=dict(run_phenomd=False),
+                use_gpu=self.use_gpu,
+            )
+            # Initialize LISA response if needed
+            self.response_gen = LISATDIResponse(use_gpu=self.use_gpu)
+        except NameError:
+            raise ImportError("BBHx is not installed. Please install BBHx to use BBHxWaveformGenerator.")
+    
+    @property
+    def domain(self):
+        if self._use_base_domain:
+            return self._domain.base_domain
+        else:
+            return self._domain
+
+    @domain.setter
+    def domain(self, value):
+        self._domain = value
+        # For now, assume BBHx always generates in frequency domain
+        self._use_base_domain = False
+        self._domain_transform = None
+
+    @property
+    def full_domain(self):
+        return self._domain
+
+    def generate_amp_phase(
+        self, parameters: Dict[str, float], catch_waveform_errors=True,
+    ) -> Dict[str, np.ndarray]:
+        """Generate GW amplitude and phase using BBHx.
+
+        Parameters
+        ----------
+        parameters: Dict[str, float]
+            A dictionary of parameter names and scalar values.
+            Required keys:
+                - mass_1, mass_2: Component masses (solar masses)
+                - chi_1z, chi_2z: Aligned-frame spins
+                - luminosity_distance: Distance to the source (Mpc)
+                - theta_jn: Inclination angle (radians)
+                - phase: Reference phase (radians)
+                - geocent_time: Geocentric time (GPS seconds)
+                - (optional) ra, dec, psi: Sky location and polarization
+
+        catch_waveform_errors: bool
+            Whether to catch waveform generation errors
+
+        Returns
+        -------
+        wf_dict: Dict
+            Dictionary of waveform data with frequency-dependent amplitudes and phases
+        """
+        try:
+            parameters = parameters.copy()
+            
+            # Convert LISA detector parameters if needed
+            if self.frozenLISA:
+                parameters = lisatools.convert_Lframe_to_SSBframe(
+                    parameters, t0=0., frozenLISA=True
+                )
+            
+            # Extract and prepare physical parameters
+            m1 = parameters.get('mass_1')
+            m2 = parameters.get('mass_2')
+            chi1z = parameters.get('chi_1z', parameters.get('chi_1', 0.0))
+            chi2z = parameters.get('chi_2z', parameters.get('chi_2', 0.0))
+            
+            # Convert distance to SI units
+            distance_mpc = parameters.get('luminosity_distance', parameters.get('redshift_distance'))
+            distance_si = distance_mpc * PC_SI * 1e6
+            
+            # Orbital parameters
+            inc = parameters.get('theta_jn', 0.0)
+            phase = parameters.get('phase', 0.0)
+            t_ref = parameters.get('geocent_time', 0.0) * YRSID_SI
+            
+            # Sky location (for LISA response)
+            lam = parameters.get('ra', 0.0)  # ecliptic longitude
+            beta = parameters.get('dec', 0.0)  # ecliptic latitude
+            psi = parameters.get('psi', 0.0)  # polarization angle
+            
+            # Generate frequency grid based on domain
+            freqs = np.linspace(self.domain.f_min, self.domain.f_max, 
+                              int((self.domain.f_max - self.domain.f_min) / self.domain.delta_f) + 1)
+            
+            # Generate waveform using BBHx
+            waveform_data = self.waveform_gen(
+                m1, m2, chi1z, chi2z,
+                distance_si,
+                phase, self.f_ref,
+                inc, lam, beta, psi,
+                t_ref,
+                freqs=freqs,
+                modes=self.mode_list,
+                direct=False,
+                fill=True,
+                squeeze=True,
+                length=1024
+            )
+            
+            # Package waveform data
+            wf_dict = {
+                'amp': np.abs(waveform_data[0]),
+                'phase': np.angle(waveform_data[0]),
+                'freqs': freqs,
+            }
+            
+            return wf_dict
+            
+        except Exception as e:
+            if catch_waveform_errors:
+                warnings.warn(f"Waveform generation failed: {e}")
+                return {
+                    'amp': np.full_like(freqs, np.nan),
+                    'phase': np.full_like(freqs, np.nan),
+                    'freqs': freqs,
+                }
+            else:
+                raise
+
+    def generate_amp_phase_m(self, parameters: Dict[str, float]) -> Dict[int, Dict]:
+        """Generate waveform grouped by m mode index.
+
+        Parameters
+        ----------
+        parameters: Dict[str, float]
+            Waveform parameters
+
+        Returns
+        -------
+        pol_m: Dict[int, Dict]
+            Dictionary with m indices as keys and waveform data as values
+        """
+        raw_data = self.generate_amp_phase(parameters)
+        
+        # For BBHx, combine modes by m index
+        pol_m = {}
+        freqs = raw_data['freqs']
+        
+        # Create complex strain representation
+        complex_strain = raw_data['amp'] * np.exp(1j * raw_data['phase'])
+        
+        # For now, group all modes together
+        # Could be extended to separate by m index if raw_data includes per-mode info
+        pol_m[2] = {"waveform": complex_strain, "freqs": freqs}
+        
+        return pol_m
