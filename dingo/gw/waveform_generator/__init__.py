@@ -6,4 +6,4 @@ from .waveform_generator import (
     generate_waveforms_parallel,
     sum_contributions_m,
 )
-from .domain import UniformFrequencyDomain
+from dingo.gw.domains import UniformFrequencyDomain
