@@ -104,14 +104,26 @@ class MultibandedFrequencyDomain(BaseFrequencyDomain):
         )
         self._delta_f = self._delta_f_bands[self._band_assignment]
 
+        # For each MFD bin, track inclusive lower/upper bin indices in the base grid.
+        # Using integer bin arithmetic avoids float-membership issues across numpy versions.
+        decimation_factors_per_bin = self._decimation_factors_bands[
+            self._band_assignment
+        ].astype(np.int64)
+        self._f_base_lower_indices = np.concatenate(
+            (
+                np.array([self._nodes_indices[0]], dtype=np.int64),
+                self._nodes_indices[0]
+                + np.cumsum(decimation_factors_per_bin[:-1], dtype=np.int64),
+            )
+        )
+        self._f_base_upper_indices = (
+            self._f_base_lower_indices + decimation_factors_per_bin - 1
+        )
+
         # For each bin, [self._f_base_lower, self._f_base_upper] describes the
         # frequency range in the base domain which is used for truncation.
-        self._f_base_lower = np.concatenate(
-            (self.nodes[:1], self.nodes[0] + np.cumsum(self._delta_f[:-1]))
-        )
-        self._f_base_upper = (
-            self.nodes[0] + np.cumsum(self._delta_f) - self.base_domain.delta_f
-        )
+        self._f_base_lower = self._f_base_lower_indices * self.base_domain.delta_f
+        self._f_base_upper = self._f_base_upper_indices * self.base_domain.delta_f
 
         # Set sample frequencies as mean of decimation range.
         self._sample_frequencies = (self._f_base_upper + self._f_base_lower) / 2
@@ -120,7 +132,10 @@ class MultibandedFrequencyDomain(BaseFrequencyDomain):
         # sample_frequencies should always be the decimation of the base domain
         # frequencies.
 
-        if self.f_min not in self.base_domain() or self.f_max not in self.base_domain():
+        if (
+            self._f_base_lower_indices[0] < self.base_domain.min_idx
+            or self._f_base_upper_indices[-1] > self.base_domain.max_idx
+        ):
             raise ValueError(
                 f"Endpoints ({self.f_min}, {self.f_max}) not in base "
                 f"domain, {self.base_domain.domain_dict}"
