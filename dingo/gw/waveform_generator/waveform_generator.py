@@ -2164,17 +2164,90 @@ class BBHxWaveformGenerator:
         pol_m: Dict[int, Dict]
             Dictionary with m indices as keys and waveform data as values
         """
-        raw_data = self.generate_amp_phase(parameters)
-        
-        # For BBHx, combine modes by m index
-        pol_m = {}
-        freqs = raw_data['freqs']
-        
-        # Create complex strain representation
-        complex_strain = raw_data['amp'] * np.exp(1j * raw_data['phase'])
-        
-        # For now, group all modes together
-        # Could be extended to separate by m index if raw_data includes per-mode info
-        pol_m[2] = {"waveform": complex_strain, "freqs": freqs}
-        
+        parameters = parameters.copy()
+
+        # Convert LISA detector parameters if needed
+        if self.frozenLISA:
+            parameters = lisatools.convert_Lframe_to_SSBframe(
+                parameters, t0=0.0, frozenLISA=True
+            )
+
+        # Extract and prepare physical parameters
+        m1 = parameters.get("mass_1")
+        m2 = parameters.get("mass_2")
+        chi1z = parameters.get("chi_1z", parameters.get("chi_1", 0.0))
+        chi2z = parameters.get("chi_2z", parameters.get("chi_2", 0.0))
+        distance_mpc = parameters.get(
+            "luminosity_distance", parameters.get("redshift_distance")
+        )
+        distance_si = distance_mpc * PC_SI * 1e6
+        inc = parameters.get("theta_jn", 0.0)
+        phase = parameters.get("phase", 0.0)
+
+        if "t_ref" in parameters:
+            t_ref = parameters["t_ref"]
+        elif "t_ref_years" in parameters:
+            t_ref = parameters["t_ref_years"] * YRSID_SI
+        elif "geocent_time" in parameters:
+            t_ref = parameters["geocent_time"]
+        else:
+            t_ref = 0.5 * YRSID_SI
+        if np.isclose(t_ref, 0.0, atol=1e-3):
+            t_ref = 0.5 * YRSID_SI
+
+        lam = parameters.get("ra", 0.0)
+        beta = parameters.get("dec", 0.0)
+        psi = parameters.get("psi", 0.0)
+
+        num_pts = int(
+            (np.log10(self.domain.f_max) - np.log10(self.domain.f_min))
+            / np.log10(1.0 + self.domain.delta_f)
+        ) + 1
+        freqs = np.logspace(np.log10(self.domain.f_min), np.log10(self.domain.f_max), num_pts)
+
+        # Request direct per-mode detector-channel waveforms from BBHx.
+        # Expected shapes:
+        #   single binary: (3, num_modes, n_freq)
+        #   batched:       (batch, 3, num_modes, n_freq)
+        waveform_modes = self.waveform_gen(
+            m1,
+            m2,
+            chi1z,
+            chi2z,
+            distance_si,
+            phase,
+            self.f_ref,
+            inc,
+            lam,
+            beta,
+            psi,
+            t_ref,
+            freqs=freqs,
+            modes=self.mode_list,
+            direct=True,
+            compress=False,
+            squeeze=True,
+        )
+
+        # Convert cupy arrays to numpy if needed.
+        waveform_modes = waveform_modes.get() if hasattr(waveform_modes, "get") else np.asarray(waveform_modes)
+
+        pol_m: Dict[int, Dict] = {}
+        for mode_idx, (_, m_val) in enumerate(self.mode_list):
+            if waveform_modes.ndim == 3:
+                # (3, num_modes, n_freq)
+                mode_waveform = waveform_modes[:, mode_idx, :]
+            elif waveform_modes.ndim == 4:
+                # (batch, 3, num_modes, n_freq)
+                mode_waveform = waveform_modes[:, :, mode_idx, :]
+            else:
+                raise ValueError(
+                    f"Unexpected BBHx per-mode waveform shape {waveform_modes.shape}."
+                )
+
+            if m_val not in pol_m:
+                pol_m[m_val] = {"waveform": mode_waveform, "freqs": freqs}
+            else:
+                pol_m[m_val]["waveform"] += mode_waveform
+
         return pol_m
