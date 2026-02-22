@@ -2084,14 +2084,15 @@ class BBHxWaveformGenerator:
             # Orbital parameters
             inc = parameters.get('theta_jn', 0.0)
             phase = parameters.get('phase', 0.0)
-            # BBHx expects t_ref in years. Support either explicit t_ref (years)
-            # or geocent_time (seconds) and convert robustly.
-            # Use 0.5 years as default (matching tutorial) to avoid numerical issues at t_ref~0
+            # BBHx expects t_ref in years. Match the tutorial default (0.5 years)
+            # when no time reference is provided.
             if "t_ref" in parameters:
                 t_ref = parameters["t_ref"]
+            elif "geocent_time" in parameters:
+                geocent_time_gps = parameters["geocent_time"]
+                t_ref = geocent_time_gps / YRSID_SI
             else:
-                geocent_time_gps = parameters.get("geocent_time", 0.5 * YRSID_SI)
-                t_ref = geocent_time_gps / YRSID_SI if geocent_time_gps > 1.0 else 0.5
+                t_ref = 0.5
             # Ensure t_ref is not pathologically close to zero (BBHx root-finding issue)
             if np.isclose(t_ref, 0.0, atol=1e-3):
                 t_ref = 0.5  # Use 0.5 years as safe default
