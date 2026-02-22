@@ -2006,8 +2006,8 @@ class BBHxWaveformGenerator:
                     self.orbits = EqualArmlengthOrbits(use_gpu=True)
                     self.orbits.configure(linear_interp_setup=True)
                     response_kwargs = dict(orbits=self.orbits)
-                except ImportError:
-                    warnings.warn("GPU mode requires lisatools for orbits. Falling back to CPU response calculation.")
+                except ImportError as e:
+                    warnings.warn(f"GPU mode requires lisatools for orbits. Falling back to CPU response calculation. Error: {e}")
                     self.use_gpu = False
             
             self.waveform_gen = BBHWaveformFD(
@@ -2015,8 +2015,8 @@ class BBHxWaveformGenerator:
                 response_kwargs=response_kwargs,
                 use_gpu=self.use_gpu,
             )
-        except NameError:
-            raise ImportError("BBHx is not installed. Please install BBHx to use BBHxWaveformGenerator.")
+        except (NameError, ImportError) as e:
+            raise ImportError(f"BBHx is not installed or cannot be imported. Please ensure BBHx is in PYTHONPATH. Error: {e}")
     
     @property
     def domain(self):
