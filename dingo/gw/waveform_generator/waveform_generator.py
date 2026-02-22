@@ -1999,6 +1999,7 @@ class BBHxWaveformGenerator:
         self.transform = transform
         self.frozenLISA = frozenLISA
         self.use_gpu = use_gpu
+        self.bbhx_length = int(kwargs.get("bbhx_length", 1024))
         self.orbits = None
         
         # Initialize BBHx waveform generator
@@ -2044,6 +2045,20 @@ class BBHxWaveformGenerator:
     @staticmethod
     def _to_numpy(x):
         return x.get() if hasattr(x, "get") else np.asarray(x)
+
+    def _build_bbhx_frequency_grid(self) -> np.ndarray:
+        """Build a robust log-spaced frequency grid for BBHx.
+
+        For multibanded domains, use base-domain bounds. This avoids relying on
+        nonuniform ``delta_f`` arrays.
+        """
+        if hasattr(self.domain, "base_domain"):
+            f_min = float(self.domain.base_domain.f_min)
+            f_max = float(self.domain.base_domain.f_max)
+        else:
+            f_min = float(self.domain.f_min)
+            f_max = float(self.domain.f_max)
+        return np.logspace(np.log10(f_min), np.log10(f_max), self.bbhx_length)
 
     def generate_amp_phase(
         self, parameters: Dict[str, float], catch_waveform_errors=False,
@@ -2116,10 +2131,8 @@ class BBHxWaveformGenerator:
             beta = parameters.get('dec', 0.0)  # ecliptic latitude
             psi = parameters.get('psi', 0.0)  # polarization angle
             
-            # Generate frequency grid based on domain using log spacing
-            # Use logspace to match tutorial (which uses np.logspace)
-            num_pts = int((np.log10(self.domain.f_max) - np.log10(self.domain.f_min)) / np.log10(1.0 + self.domain.delta_f)) + 1
-            freqs = np.logspace(np.log10(self.domain.f_min), np.log10(self.domain.f_max), num_pts)
+            # Generate frequency grid based on domain bounds.
+            freqs = self._build_bbhx_frequency_grid()
             
             # Generate waveform using BBHx
             waveform_data = self.waveform_gen(
@@ -2133,7 +2146,7 @@ class BBHxWaveformGenerator:
                 direct=False,
                 fill=True,
                 squeeze=True,
-                length=1024
+                length=self.bbhx_length
             )
             
             # Package waveform data. Keep all returned channels (A/E/T) rather than
@@ -2211,13 +2224,7 @@ class BBHxWaveformGenerator:
             t_ref = 0.5 * YRSID_SI
 
         # Keep frequency handling consistent with generate_amp_phase().
-        num_pts = int(
-            (np.log10(self.domain.f_max) - np.log10(self.domain.f_min))
-            / np.log10(1.0 + self.domain.delta_f)
-        ) + 1
-        freqs = np.logspace(
-            np.log10(self.domain.f_min), np.log10(self.domain.f_max), num_pts
-        )
+        freqs = self._build_bbhx_frequency_grid()
 
         # Use BBHx intrinsic amp/phase/tf generator directly. This keeps detector
         # response application in Dingo transforms (same approach as LISABeta path).
@@ -2231,7 +2238,7 @@ class BBHxWaveformGenerator:
             phi_ref_amp_phase,
             self.f_ref,
             t_ref,
-            length=len(freqs),
+            length=self.bbhx_length,
             freqs=freqs,
             modes=self.mode_list,
             direct=True,
