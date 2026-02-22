@@ -15,6 +15,7 @@ from multiprocessing import Pool, cpu_count
 from dingo.gw.waveform_generator import (
     NewInterfaceWaveformGenerator,
     LISAWaveformGenerator,
+    BBHxWaveformGenerator,
     WaveformGenerator,
     generate_waveforms_parallel,
 )
@@ -98,6 +99,7 @@ class WaveformDataset(DingoDataset, torch.utils.data.Dataset):
             domain = build_domain(self.settings["domain"])
             new_interface_flag = self.settings["waveform_generator"].get("new_interface", False)
             LISA_flag = self.settings["waveform_generator"].get("LISA", False)
+            BBHx_flag = self.settings["waveform_generator"].get("BBHx", False)
 
             if new_interface_flag:
                 self.waveform_generator = NewInterfaceWaveformGenerator(
@@ -106,6 +108,11 @@ class WaveformDataset(DingoDataset, torch.utils.data.Dataset):
                 )
             elif LISA_flag:
                 self.waveform_generator = LISAWaveformGenerator(
+                    domain=domain,
+                    **self.settings["waveform_generator"],
+                )
+            elif BBHx_flag:
+                self.waveform_generator = BBHxWaveformGenerator(
                     domain=domain,
                     **self.settings["waveform_generator"],
                 )
@@ -141,8 +148,10 @@ class WaveformDataset(DingoDataset, torch.utils.data.Dataset):
         #This does not apply to LISA.  Currently if update_domain() is called
         #the function sets all the waveforms for index where f < f_min to 0
         #adding flag until this can be properly addressed.
-        lisa_flag = self.settings["waveform_generator"].get("LISA",False)
-        if lisa_flag == False:
+        lisa_flag = self.settings["waveform_generator"].get("LISA", False)
+        bbhx_flag = self.settings["waveform_generator"].get("BBHx", False)
+        lisa_like_flag = lisa_flag or bbhx_flag
+        if not lisa_like_flag:
             self.update_domain(domain_update)
 
         # Update dtypes if necessary
@@ -151,7 +160,7 @@ class WaveformDataset(DingoDataset, torch.utils.data.Dataset):
                 self.parameters = self.parameters.astype(self.real_type, copy=False)
             if self.polarizations is not None:
                 for k, v in self.polarizations.items():
-                    if lisa_flag == False:
+                    if not lisa_like_flag:
                         self.polarizations[k] = v.astype(self.complex_type, copy=False)
                     else:
                         self.polarizations[k] = v
@@ -332,12 +341,16 @@ class WaveformDataset(DingoDataset, torch.utils.data.Dataset):
                 self.file_handle, keys=self._leave_on_disk_keys, idx=batched_idx
             )["polarizations"]
             # Apply domain update to set waveform to zero for f < f_min
+            bbhx_flag = self.settings["waveform_generator"].get("BBHx", False)
+            lisa_flag = self.settings["waveform_generator"].get("LISA", False)
+            lisa_like_flag = lisa_flag or bbhx_flag
             if self.svd is None:
                 try:
-                    polarizations = {
-                        pol: self.domain.update_data(waveforms)
-                        for pol, waveforms in polarizations.items()
-                    }
+                    if not lisa_like_flag:
+                        polarizations = {
+                            pol: self.domain.update_data(waveforms)
+                            for pol, waveforms in polarizations.items()
+                        }
                 except:
                     polarizations_ = {
                         pol: {
@@ -356,10 +369,11 @@ class WaveformDataset(DingoDataset, torch.utils.data.Dataset):
             # Update precision
             try:
                 if self.precision is not None:
-                    polarizations = {
-                        k: v.astype(self.complex_type, copy=False)
-                        for k, v in polarizations.items()
-                    }
+                    if not lisa_like_flag:
+                        polarizations = {
+                            k: v.astype(self.complex_type, copy=False)
+                            for k, v in polarizations.items()
+                        }
             except:
                 if self.precision is not None:
                     polarizations = {

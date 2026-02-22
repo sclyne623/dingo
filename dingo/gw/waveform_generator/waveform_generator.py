@@ -1525,8 +1525,8 @@ def generate_waveforms_task_func(
     parameters = args[1].to_dict()
 
     
-    if isinstance(waveform_generator, LISAWaveformGenerator):
-        # If it's a LISAwaveformGenerator, use generate_amp_phase
+    if isinstance(waveform_generator, (LISAWaveformGenerator, BBHxWaveformGenerator)):
+        # LISA/BBHx generators return amplitude/phase-style dictionaries.
         return waveform_generator.generate_amp_phase(parameters)
     
     else:
@@ -1570,10 +1570,8 @@ def generate_waveforms_parallel(
         waveform_dict_list = list(map(task_func, task_data))
 
     
-    #Adds support for lisabeta waveform structure.  for LIGO we get a stack of 
-    #arrays in a dict for h_plus and h_cross.  Here we adopt a similar structure 
-    #with an extra dict layer.  Keys are modes and for each key we get a dict 
-    #of freq arrays, amp arrays, phase arrays, and tf arrays.
+    # Adds support for nested waveform structures (e.g. lisabeta modes).
+    # For standard LIGO and BBHx dictionaries, stack arrays directly.
     if isinstance(waveform_generator, LISAWaveformGenerator):
         waveform_dict = {
         pol: {

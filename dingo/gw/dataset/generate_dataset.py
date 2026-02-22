@@ -23,6 +23,7 @@ from dingo.gw.transforms import WhitenFixedASD
 from dingo.gw.waveform_generator import (
     NewInterfaceWaveformGenerator,
     LISAWaveformGenerator,
+    BBHxWaveformGenerator,
     WaveformGenerator,
     generate_waveforms_parallel,
 )
@@ -222,6 +223,7 @@ def generate_dataset(settings: Dict, num_processes: int) -> WaveformDataset:
 
     new_interface_flag = settings["waveform_generator"].get("new_interface", False)
     LISA_flag = settings["waveform_generator"].get("LISA", False)
+    BBHx_flag = settings["waveform_generator"].get("BBHx", False)
     
     if new_interface_flag:
         waveform_generator = NewInterfaceWaveformGenerator(
@@ -231,6 +233,11 @@ def generate_dataset(settings: Dict, num_processes: int) -> WaveformDataset:
     #We add new flag to check if LISA waveforms being analyzed
     elif LISA_flag:
         waveform_generator = LISAWaveformGenerator(
+            domain=domain,
+            **settings["waveform_generator"],
+        )
+    elif BBHx_flag:
+        waveform_generator = BBHxWaveformGenerator(
             domain=domain,
             **settings["waveform_generator"],
         )
