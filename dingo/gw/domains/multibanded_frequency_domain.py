@@ -141,8 +141,18 @@ class MultibandedFrequencyDomain(BaseFrequencyDomain):
                 f"domain, {self.base_domain.domain_dict}"
             )
 
-        # Update base domain to required range.
-        self.base_domain.update({"f_min": self.f_min, "f_max": self.f_max})
+        # Update base domain to required range. Snap exact-boundary index matches to
+        # the existing base-domain bounds to avoid tiny float roundoff crossing the
+        # strict interval checks in UniformFrequencyDomain.update().
+        if self._f_base_lower_indices[0] == self.base_domain.min_idx:
+            f_min_update = float(self.base_domain.f_min)
+        else:
+            f_min_update = float(self.f_min)
+        if self._f_base_upper_indices[-1] == self.base_domain.max_idx:
+            f_max_update = float(self.base_domain.f_max)
+        else:
+            f_max_update = float(self.f_max)
+        self.base_domain.update({"f_min": f_min_update, "f_max": f_max_update})
 
     def decimate(self, data: np.ndarray | torch.Tensor) -> np.ndarray | torch.Tensor:
         """
