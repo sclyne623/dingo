@@ -2084,9 +2084,16 @@ class BBHxWaveformGenerator:
             # Orbital parameters
             inc = parameters.get('theta_jn', 0.0)
             phase = parameters.get('phase', 0.0)
-            # geocent_time is in GPS seconds (SI), convert to years for LISA frame
-            geocent_time_gps = parameters.get('geocent_time', 0.0)
-            t_ref = geocent_time_gps * YRSID_SI
+            # BBHx expects t_ref in years. Support either explicit t_ref (years)
+            # or geocent_time (seconds) and convert robustly.
+            if "t_ref" in parameters:
+                t_ref = parameters["t_ref"]
+            else:
+                geocent_time_gps = parameters.get("geocent_time", 0.0)
+                t_ref = geocent_time_gps / YRSID_SI
+            # Avoid BBHx root-finding failure exactly at t_ref ~= 0.
+            if np.isclose(t_ref, 0.0):
+                t_ref = 1e-6
             
             # Sky location (for LISA response)
             lam = parameters.get('ra', 0.0)  # ecliptic longitude
