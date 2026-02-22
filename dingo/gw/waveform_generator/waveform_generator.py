@@ -2086,14 +2086,15 @@ class BBHxWaveformGenerator:
             phase = parameters.get('phase', 0.0)
             # BBHx expects t_ref in years. Support either explicit t_ref (years)
             # or geocent_time (seconds) and convert robustly.
+            # Use 0.5 years as default (matching tutorial) to avoid numerical issues at t_ref~0
             if "t_ref" in parameters:
                 t_ref = parameters["t_ref"]
             else:
-                geocent_time_gps = parameters.get("geocent_time", 0.0)
-                t_ref = geocent_time_gps / YRSID_SI
-            # Avoid BBHx root-finding failure exactly at t_ref ~= 0.
-            if np.isclose(t_ref, 0.0):
-                t_ref = 1e-6
+                geocent_time_gps = parameters.get("geocent_time", 0.5 * YRSID_SI)
+                t_ref = geocent_time_gps / YRSID_SI if geocent_time_gps > 1.0 else 0.5
+            # Ensure t_ref is not pathologically close to zero (BBHx root-finding issue)
+            if np.isclose(t_ref, 0.0, atol=1e-3):
+                t_ref = 0.5  # Use 0.5 years as safe default
             
             # Sky location (for LISA response)
             lam = parameters.get('ra', 0.0)  # ecliptic longitude
