@@ -13,6 +13,7 @@ from dingo.gw.domains import build_domain
 from dingo.gw.transforms import (
     ProjectOntoDetectors,
     ProjectOntoSpaceDetectors,
+    GenerateBBHxDirectResponse,
     SampleNoiseASD,
     WhitenAndScaleStrain,
     AddWhiteNoiseComplex,
@@ -179,8 +180,26 @@ def set_train_transforms(wfd, data_settings, asd_dataset_path, omit_transforms=N
             torchvision.transforms.Compose(transforms),
         )
         data_settings["standardization"] = standardization_dict
+    waveform_generator_settings = wfd.settings.get("waveform_generator", {})
+    bbhx_direct_response = (
+        waveform_generator_settings.get("BBHx", False)
+        and waveform_generator_settings.get("direct_response", False)
+    )
     if data_settings["detector_type"] == "LISA":
-        transforms.append(ProjectOntoSpaceDetectors("TDIAET",domain, ref_time,data_settings["detectors"],data_settings["lisa_settings"])) #Hard Coded need to change
+        if bbhx_direct_response:
+            if not hasattr(wfd, "waveform_generator"):
+                raise RuntimeError(
+                    "BBHx direct-response training requires on-the-fly waveform "
+                    "generation. Set local.on_fly=True."
+                )
+            transforms.append(
+                GenerateBBHxDirectResponse(
+                    wfd.waveform_generator,
+                    data_settings["detectors"],
+                )
+            )
+        else:
+            transforms.append(ProjectOntoSpaceDetectors("TDIAET",domain, ref_time,data_settings["detectors"],data_settings["lisa_settings"])) #Hard Coded need to change
     else:
         transforms.append(ProjectOntoDetectors(ifo_list, domain, ref_time))
     transforms.append(SampleNoiseASD(asd_dataset))

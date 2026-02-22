@@ -203,6 +203,121 @@ class GetDetectorTimes(object):
         return sample
 
 
+class GenerateBBHxDirectResponse(object):
+    """
+    Generate BBHx detector-frame strains directly (A/E/T) using BBHx response.
+
+    This transform is intended for on-the-fly LISA training, where extrinsic
+    parameters are sampled at train time and should be folded into waveform
+    generation on GPU.
+    """
+
+    def __init__(self, waveform_generator, channels):
+        from dingo.gw.waveform_generator.waveform_generator import BBHxWaveformGenerator
+
+        if not isinstance(waveform_generator, BBHxWaveformGenerator):
+            raise TypeError(
+                "GenerateBBHxDirectResponse requires a BBHxWaveformGenerator."
+            )
+        self.waveform_generator = waveform_generator
+        self.channels = channels
+
+    @staticmethod
+    def _get_first(d, keys, default=None):
+        for k in keys:
+            if k in d:
+                return d[k]
+        return default
+
+    @staticmethod
+    def _normalize_waveform_shape(h):
+        h = np.asarray(h)
+        if h.ndim == 1:
+            return h[np.newaxis, np.newaxis, :]
+        if h.ndim == 2:
+            # Single sample with channel axis.
+            return h[np.newaxis, :, :]
+        if h.ndim == 3:
+            return h
+        raise ValueError(f"Unsupported BBHx waveform shape {h.shape}.")
+
+    def __call__(self, input_sample):
+        sample = input_sample.copy()
+        parameters = sample["parameters"].copy()
+        extrinsic_parameters = sample["extrinsic_parameters"].copy()
+
+        # Build full parameter dict for BBHx generation. Extrinsic values should
+        # override reference intrinsic placeholders.
+        full_parameters = {**parameters, **extrinsic_parameters}
+        wf = self.waveform_generator.generate_amp_phase(
+            full_parameters, catch_waveform_errors=False
+        )
+        h = self._normalize_waveform_shape(wf["waveform"])
+
+        chan1 = h[:, 0, :]
+        chan2 = h[:, 1, :] if h.shape[1] > 1 else np.zeros_like(chan1)
+        chan3 = h[:, 2, :] if h.shape[1] > 2 else np.zeros_like(chan1)
+
+        strains = {"chan1": chan1, "chan2": chan2}
+        if "chan3" in self.channels:
+            strains["chan3"] = chan3
+
+        # Keep parameter bookkeeping consistent with downstream transforms.
+        dist = self._get_first(
+            extrinsic_parameters,
+            ["dist", "luminosity_distance"],
+            self._get_first(parameters, ["dist", "luminosity_distance"]),
+        )
+        inc = self._get_first(
+            extrinsic_parameters,
+            ["inc", "theta_jn"],
+            self._get_first(parameters, ["inc", "theta_jn"]),
+        )
+        lambd = self._get_first(
+            extrinsic_parameters,
+            ["lambda", "ra"],
+            self._get_first(parameters, ["lambda", "ra"]),
+        )
+        beta = self._get_first(
+            extrinsic_parameters,
+            ["beta", "dec"],
+            self._get_first(parameters, ["beta", "dec"]),
+        )
+        psi = self._get_first(
+            extrinsic_parameters,
+            ["psi"],
+            self._get_first(parameters, ["psi"]),
+        )
+        geocent_time = self._get_first(
+            extrinsic_parameters,
+            ["geocent_time", "t_ref"],
+            self._get_first(parameters, ["geocent_time", "t_ref"]),
+        )
+        phase = self._get_first(
+            extrinsic_parameters,
+            ["phase", "phi"],
+            self._get_first(parameters, ["phase", "phi"], 0.0),
+        )
+
+        parameters["dist"] = dist
+        parameters["luminosity_distance"] = dist
+        parameters["inc"] = inc
+        parameters["theta_jn"] = inc
+        parameters["lambda"] = lambd
+        parameters["ra"] = lambd
+        parameters["beta"] = beta
+        parameters["dec"] = beta
+        parameters["psi"] = psi
+        parameters["geocent_time"] = geocent_time
+        parameters["phase"] = phase
+        parameters["phi"] = phase
+
+        sample["waveform"] = strains
+        sample["parameters"] = parameters
+        sample["extrinsic_parameters"] = extrinsic_parameters
+        return sample
+
+
 class ProjectOntoSpaceDetectors(object):
     """
     Project the GW onto the detectors in ifo_list (AET for LISA). This does

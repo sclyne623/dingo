@@ -403,6 +403,11 @@ class WaveformDataset(DingoDataset, torch.utils.data.Dataset):
                         "training with parameter-only LISA/BBHx datasets."
                     )
                 local_batch_idx = range(len(batched_idx))
+                waveform_settings = self.settings.get("waveform_generator", {})
+                bbhx_direct_response = (
+                    waveform_settings.get("BBHx", False)
+                    and waveform_settings.get("direct_response", False)
+                )
                 #num_processes = cpu_count()
                 #if num_processes > 1:
                 #    with threadpool_limits(limits=1, user_api="blas"):
@@ -411,15 +416,20 @@ class WaveformDataset(DingoDataset, torch.utils.data.Dataset):
                 #                self.waveform_generator, self.parameters.iloc[batched_idx], pool
                 #)
                 #else:
-                batch_waveforms = generate_waveforms_parallel(self.waveform_generator, self.parameters.iloc[batched_idx])
-                
-                polarizations = {
-                pol: {
-                    key: self.get_batch(val, local_batch_idx)
-                    for key, val in waveforms.items()
-                } if isinstance(waveforms, dict) else self.get_batch(waveforms, local_batch_idx)
-                for pol, waveforms in batch_waveforms.items()
-            }
+                if bbhx_direct_response:
+                    # Waveforms are generated after extrinsic sampling by
+                    # GenerateBBHxDirectResponse transform.
+                    polarizations = {}
+                else:
+                    batch_waveforms = generate_waveforms_parallel(self.waveform_generator, self.parameters.iloc[batched_idx])
+                    
+                    polarizations = {
+                    pol: {
+                        key: self.get_batch(val, local_batch_idx)
+                        for key, val in waveforms.items()
+                    } if isinstance(waveforms, dict) else self.get_batch(waveforms, local_batch_idx)
+                    for pol, waveforms in batch_waveforms.items()
+                }
                 
 
 

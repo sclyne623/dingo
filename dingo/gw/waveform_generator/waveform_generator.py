@@ -1525,8 +1525,10 @@ def generate_waveforms_task_func(
     parameters = args[1].to_dict()
 
     if isinstance(waveform_generator, BBHxWaveformGenerator):
-        # For training with LISA-style projection transforms, BBHx should provide
-        # intrinsic mode dictionaries and let detector response be applied later.
+        # For direct-response mode, generate detector-frame strains directly.
+        if getattr(waveform_generator, "direct_response", False):
+            return waveform_generator.generate_amp_phase(parameters)
+        # Otherwise provide intrinsic mode dictionaries and apply response later.
         return waveform_generator.generate_amp_phase_m(parameters)
 
     if isinstance(waveform_generator, LISAWaveformGenerator):
@@ -1999,6 +2001,7 @@ class BBHxWaveformGenerator:
         self.transform = transform
         self.frozenLISA = frozenLISA
         self.use_gpu = use_gpu
+        self.direct_response = bool(kwargs.get("direct_response", False))
         self.bbhx_length = int(kwargs.get("bbhx_length", 1024))
         self.orbits = None
         
@@ -2071,7 +2074,7 @@ class BBHxWaveformGenerator:
                     "BBHxWaveformGenerator requires either (mass_1, mass_2) or "
                     "(chirp_mass/Mchirp, mass_ratio/q)."
                 )
-            m1, m2 = self._masses_from_chirp_mass_and_q(float(chirp_mass), float(q))
+            m1, m2 = self._masses_from_chirp_mass_and_q(chirp_mass, q)
 
         chi1z = self._get_first(
             parameters, ["chi_1z", "chi1z", "chi_1", "chi1"], 0.0
@@ -2105,26 +2108,29 @@ class BBHxWaveformGenerator:
             t_ref = parameters["geocent_time"]
         else:
             t_ref = 0.5 * YRSID_SI
-        # Avoid t_ref close to zero (BBHx root-finding issue in PhenomHM).
-        if np.isclose(t_ref, 0.0, atol=1e-3):
-            t_ref = 0.5 * YRSID_SI
+        if np.isscalar(t_ref):
+            if np.isclose(t_ref, 0.0, atol=1e-3):
+                t_ref = 0.5 * YRSID_SI
+        else:
+            t_ref = np.asarray(t_ref, dtype=np.float64)
+            t_ref = np.where(np.isclose(t_ref, 0.0, atol=1e-3), 0.5 * YRSID_SI, t_ref)
 
         return {
-            "m1": float(m1),
-            "m2": float(m2),
-            "chi1z": float(chi1z),
-            "chi2z": float(chi2z),
-            "distance_mpc": float(distance_mpc),
-            "inc": float(inc),
-            "phase": float(phase),
-            "lam": float(lam),
-            "beta": float(beta),
-            "psi": float(psi),
-            "t_ref": float(t_ref),
+            "m1": m1,
+            "m2": m2,
+            "chi1z": chi1z,
+            "chi2z": chi2z,
+            "distance_mpc": distance_mpc,
+            "inc": inc,
+            "phase": phase,
+            "lam": lam,
+            "beta": beta,
+            "psi": psi,
+            "t_ref": t_ref,
         }
 
     def _build_bbhx_frequency_grid(self) -> np.ndarray:
-        """Build a robust log-spaced frequency grid for BBHx.
+        """Build a sparse log-spaced frequency grid for BBHx interpolation.
 
         For multibanded domains, use base-domain bounds. This avoids relying on
         nonuniform ``delta_f`` arrays.
@@ -2136,6 +2142,14 @@ class BBHxWaveformGenerator:
             f_min = float(self.domain.f_min)
             f_max = float(self.domain.f_max)
         return np.logspace(np.log10(f_min), np.log10(f_max), self.bbhx_length)
+
+    def _get_output_frequency_grid(self) -> np.ndarray:
+        """Frequency grid for final waveforms, aligned with the Dingo domain."""
+        if hasattr(self.domain, "sample_frequencies"):
+            return np.asarray(self.domain.sample_frequencies, dtype=np.float64)
+        if hasattr(self.domain, "base_domain"):
+            return np.asarray(self.domain.base_domain.sample_frequencies, dtype=np.float64)
+        return self._build_bbhx_frequency_grid()
 
     def generate_amp_phase(
         self, parameters: Dict[str, float], catch_waveform_errors=False,
@@ -2185,8 +2199,8 @@ class BBHxWaveformGenerator:
             psi = parsed["psi"]
             t_ref = parsed["t_ref"]
             
-            # Generate frequency grid based on domain bounds.
-            freqs = self._build_bbhx_frequency_grid()
+            # Interpolate BBHx output onto the Dingo domain grid.
+            freqs = self._get_output_frequency_grid()
             
             # Generate waveform using BBHx
             waveform_data = self.waveform_gen(
@@ -2205,7 +2219,7 @@ class BBHxWaveformGenerator:
             
             # Package waveform data. Keep all returned channels (A/E/T) rather than
             # indexing a single channel.
-            waveform_data = np.asarray(waveform_data)
+            waveform_data = self._to_numpy(waveform_data)
             wf_dict = {
                 "waveform": waveform_data,
                 "amp": np.abs(waveform_data),
