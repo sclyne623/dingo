@@ -2125,11 +2125,14 @@ class BBHxWaveformGenerator:
                 length=1024
             )
             
-            # Package waveform data
+            # Package waveform data. Keep all returned channels (A/E/T) rather than
+            # indexing a single channel.
+            waveform_data = np.asarray(waveform_data)
             wf_dict = {
-                'amp': np.abs(waveform_data[0]),
-                'phase': np.angle(waveform_data[0]),
-                'freqs': freqs,
+                "waveform": waveform_data,
+                "amp": np.abs(waveform_data),
+                "phase": np.angle(waveform_data),
+                "freqs": freqs,
             }
             
             return wf_dict
@@ -2137,10 +2140,13 @@ class BBHxWaveformGenerator:
         except Exception as e:
             if catch_waveform_errors:
                 warnings.warn(f"Waveform generation failed: {e}")
+                # Default to three LISA channels when shape inference is not available.
+                nan_shape = (3, len(freqs))
                 return {
-                    'amp': np.full_like(freqs, np.nan),
-                    'phase': np.full_like(freqs, np.nan),
-                    'freqs': freqs,
+                    "waveform": np.full(nan_shape, np.nan, dtype=np.complex128),
+                    "amp": np.full(nan_shape, np.nan),
+                    "phase": np.full(nan_shape, np.nan),
+                    "freqs": freqs,
                 }
             else:
                 raise
