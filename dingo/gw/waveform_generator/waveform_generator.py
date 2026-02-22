@@ -1524,13 +1524,32 @@ def generate_waveforms_task_func(
     """
     parameters = args[1].to_dict()
 
-    
-    if isinstance(waveform_generator, (LISAWaveformGenerator, BBHxWaveformGenerator)):
-        # LISA/BBHx generators return amplitude/phase-style dictionaries.
+    if isinstance(waveform_generator, BBHxWaveformGenerator):
+        # For training with LISA-style projection transforms, BBHx should provide
+        # intrinsic mode dictionaries and let detector response be applied later.
+        return waveform_generator.generate_amp_phase_m(parameters)
+
+    if isinstance(waveform_generator, LISAWaveformGenerator):
+        # LISABeta generator returns amplitude/phase-style dictionaries by mode.
         return waveform_generator.generate_amp_phase(parameters)
     
     else:
         return waveform_generator.generate_hplus_hcross(parameters)
+
+
+def _stack_nested_waveforms(values):
+    """Recursively stack nested waveform dictionaries."""
+    first = values[0]
+    if isinstance(first, dict):
+        return {
+            k: _stack_nested_waveforms([v[k] for v in values])
+            for k in first.keys()
+        }
+    try:
+        return np.stack(values)
+    except ValueError:
+        # Some LISA/LISABeta mode arrays are variable-length across samples.
+        return list(values)
 
 
 def generate_waveforms_parallel(
@@ -1570,22 +1589,10 @@ def generate_waveforms_parallel(
         waveform_dict_list = list(map(task_func, task_data))
 
     
-    # Adds support for nested waveform structures (e.g. lisabeta modes).
-    # For standard LIGO and BBHx dictionaries, stack arrays directly.
-    if isinstance(waveform_generator, LISAWaveformGenerator):
-        waveform_dict = {
-        pol: {
-            key: [wf[pol][key] for wf in waveform_dict_list]
-            for key in waveform_dict_list[0][pol].keys()
-        }
+    waveform_dict = {
+        pol: _stack_nested_waveforms([wf[pol] for wf in waveform_dict_list])
         for pol in waveform_dict_list[0].keys()
-        }
-    else: 
-        
-        waveform_dict = {
-            pol: np.stack([wf[pol] for wf in waveform_dict_list])
-            for pol in waveform_dict_list[0].keys()
-        }
+    }
 
     return waveform_dict
 
@@ -2034,6 +2041,10 @@ class BBHxWaveformGenerator:
     def full_domain(self):
         return self._domain
 
+    @staticmethod
+    def _to_numpy(x):
+        return x.get() if hasattr(x, "get") else np.asarray(x)
+
     def generate_amp_phase(
         self, parameters: Dict[str, float], catch_waveform_errors=False,
     ) -> Dict[str, np.ndarray]:
@@ -2151,8 +2162,10 @@ class BBHxWaveformGenerator:
             else:
                 raise
 
-    def generate_amp_phase_m(self, parameters: Dict[str, float]) -> Dict[int, Dict]:
-        """Generate waveform grouped by m mode index.
+    def generate_amp_phase_m(
+        self, parameters: Dict[str, float]
+    ) -> Dict[Tuple[int, int], Dict[str, np.ndarray]]:
+        """Generate intrinsic amplitude/phase/tf data per (l, m) mode.
 
         Parameters
         ----------
@@ -2161,8 +2174,8 @@ class BBHxWaveformGenerator:
 
         Returns
         -------
-        pol_m: Dict[int, Dict]
-            Dictionary with m indices as keys and waveform data as values
+        pol_lm: Dict[Tuple[int, int], Dict[str, np.ndarray]]
+            Mode dictionary compatible with ``ProjectOntoSpaceDetectors``.
         """
         parameters = parameters.copy()
 
@@ -2172,17 +2185,19 @@ class BBHxWaveformGenerator:
                 parameters, t0=0.0, frozenLISA=True
             )
 
-        # Extract and prepare physical parameters
+        # Extract and prepare physical parameters.
         m1 = parameters.get("mass_1")
         m2 = parameters.get("mass_2")
         chi1z = parameters.get("chi_1z", parameters.get("chi_1", 0.0))
         chi2z = parameters.get("chi_2z", parameters.get("chi_2", 0.0))
-        distance_mpc = parameters.get(
-            "luminosity_distance", parameters.get("redshift_distance")
-        )
+        distance_mpc = parameters.get("luminosity_distance", parameters.get("dist"))
+        if distance_mpc is None:
+            distance_mpc = parameters.get("redshift_distance")
+        if distance_mpc is None:
+            raise ValueError(
+                "BBHxWaveformGenerator requires luminosity_distance/dist (Mpc)."
+            )
         distance_si = distance_mpc * PC_SI * 1e6
-        inc = parameters.get("theta_jn", 0.0)
-        phase = parameters.get("phase", 0.0)
 
         if "t_ref" in parameters:
             t_ref = parameters["t_ref"]
@@ -2195,59 +2210,52 @@ class BBHxWaveformGenerator:
         if np.isclose(t_ref, 0.0, atol=1e-3):
             t_ref = 0.5 * YRSID_SI
 
-        lam = parameters.get("ra", 0.0)
-        beta = parameters.get("dec", 0.0)
-        psi = parameters.get("psi", 0.0)
-
+        # Keep frequency handling consistent with generate_amp_phase().
         num_pts = int(
             (np.log10(self.domain.f_max) - np.log10(self.domain.f_min))
             / np.log10(1.0 + self.domain.delta_f)
         ) + 1
-        freqs = np.logspace(np.log10(self.domain.f_min), np.log10(self.domain.f_max), num_pts)
+        freqs = np.logspace(
+            np.log10(self.domain.f_min), np.log10(self.domain.f_max), num_pts
+        )
 
-        # Request direct per-mode detector-channel waveforms from BBHx.
-        # Expected shapes:
-        #   single binary: (3, num_modes, n_freq)
-        #   batched:       (batch, 3, num_modes, n_freq)
-        waveform_modes = self.waveform_gen(
+        # Use BBHx intrinsic amp/phase/tf generator directly. This keeps detector
+        # response application in Dingo transforms (same approach as LISABeta path).
+        phi_ref_amp_phase = np.zeros_like(np.atleast_1d(m1), dtype=float)
+        self.waveform_gen.amp_phase_gen(
             m1,
             m2,
             chi1z,
             chi2z,
             distance_si,
-            phase,
+            phi_ref_amp_phase,
             self.f_ref,
-            inc,
-            lam,
-            beta,
-            psi,
             t_ref,
+            length=len(freqs),
             freqs=freqs,
             modes=self.mode_list,
             direct=True,
-            compress=False,
-            squeeze=True,
         )
 
-        # Convert cupy arrays to numpy if needed.
-        waveform_modes = waveform_modes.get() if hasattr(waveform_modes, "get") else np.asarray(waveform_modes)
+        amp = self._to_numpy(self.waveform_gen.amp_phase_gen.amp)
+        phase = self._to_numpy(self.waveform_gen.amp_phase_gen.phase)
+        tf = self._to_numpy(self.waveform_gen.amp_phase_gen.tf)
+        freqs_shaped = self._to_numpy(self.waveform_gen.amp_phase_gen.freqs_shaped)
 
-        pol_m: Dict[int, Dict] = {}
-        for mode_idx, (_, m_val) in enumerate(self.mode_list):
-            if waveform_modes.ndim == 3:
-                # (3, num_modes, n_freq)
-                mode_waveform = waveform_modes[:, mode_idx, :]
-            elif waveform_modes.ndim == 4:
-                # (batch, 3, num_modes, n_freq)
-                mode_waveform = waveform_modes[:, :, mode_idx, :]
-            else:
-                raise ValueError(
-                    f"Unexpected BBHx per-mode waveform shape {waveform_modes.shape}."
-                )
+        # Remove the binary dimension for single-sample generation.
+        if amp.ndim == 3 and amp.shape[0] == 1:
+            amp = amp[0]
+            phase = phase[0]
+            tf = tf[0]
+            freqs_shaped = freqs_shaped[0]
 
-            if m_val not in pol_m:
-                pol_m[m_val] = {"waveform": mode_waveform, "freqs": freqs}
-            else:
-                pol_m[m_val]["waveform"] += mode_waveform
+        pol_lm: Dict[Tuple[int, int], Dict[str, np.ndarray]] = {}
+        for mode_idx, lm in enumerate(self.mode_list):
+            pol_lm[lm] = {
+                "freq": np.asarray(freqs_shaped[mode_idx]),
+                "amp": np.asarray(amp[mode_idx]),
+                "phase": np.asarray(phase[mode_idx]),
+                "tf": np.asarray(tf[mode_idx]),
+            }
 
-        return pol_m
+        return pol_lm

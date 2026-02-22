@@ -230,14 +230,14 @@ def generate_dataset(settings: Dict, num_processes: int) -> WaveformDataset:
             domain=domain,
             **settings["waveform_generator"],
         )
-    #We add new flag to check if LISA waveforms being analyzed
-    elif LISA_flag:
-        waveform_generator = LISAWaveformGenerator(
+    elif BBHx_flag:
+        waveform_generator = BBHxWaveformGenerator(
             domain=domain,
             **settings["waveform_generator"],
         )
-    elif BBHx_flag:
-        waveform_generator = BBHxWaveformGenerator(
+    #We add new flag to check if LISA waveforms being analyzed
+    elif LISA_flag:
+        waveform_generator = LISAWaveformGenerator(
             domain=domain,
             **settings["waveform_generator"],
         )

@@ -332,43 +332,49 @@ class ProjectOntoSpaceDetectors(object):
             sample["extrinsic_parameters"] = extrinsic_parameters
             return sample
 
-        for lm in sample["waveform"].keys():
-            l = lm[0]
-            m = lm[1]
-            
-        
-        
-        
         # the line below is required as sample is a shallow copy of
         # input_sample, and we don't want to modify input_sample
         parameters = sample["parameters"].copy()
         extrinsic_parameters = sample["extrinsic_parameters"].copy()
-        
-        #If statements handle injections.  Can be handled way better
-        if "inc" not in parameters.keys():
-            parameters["inc"] = extrinsic_parameters["inc"]
-        if "geocent_time" not in parameters.keys():
-            parameters["geocent_time"] = extrinsic_parameters["geocent_time"]
-        if "phi" not in parameters.keys():
-            parameters["phi"] = extrinsic_parameters["phi"]
-            
-        try:
-            d_ref = parameters["dist"]
-            d_new = extrinsic_parameters.pop("dist")
-            beta = extrinsic_parameters.pop("beta")
-            inc = parameters["inc"]
-            lambd = extrinsic_parameters.pop("lambda")
-            psi = extrinsic_parameters.pop("psi")
-            tc_ref = parameters["geocent_time"]
-            phi = parameters["phi"]
-            assert np.allclose(tc_ref, 0.0), (
-                "This should always be 0. If for some reason "
-                "you want to save time shifted polarizations,"
-                " then remove this assert statement."
+
+        # Support both lisabeta-style and bilby-style naming.
+        d_ref = self._get_first(parameters, ["dist", "luminosity_distance"], None)
+        d_new = self._pop_first(
+            extrinsic_parameters,
+            ["dist", "luminosity_distance"],
+            d_ref,
+        )
+
+        beta = self._pop_first(
+            extrinsic_parameters,
+            ["beta", "dec"],
+            self._get_first(parameters, ["beta", "dec"], None),
+        )
+        lambd = self._pop_first(
+            extrinsic_parameters,
+            ["lambda", "ra"],
+            self._get_first(parameters, ["lambda", "ra"], None),
+        )
+        psi = self._pop_first(
+            extrinsic_parameters, ["psi"], self._get_first(parameters, ["psi"], None)
+        )
+        inc = self._get_first(parameters, ["inc", "theta_jn"], None)
+        if inc is None:
+            inc = self._pop_first(extrinsic_parameters, ["inc", "theta_jn"], None)
+        phi = self._get_first(parameters, ["phi", "phase"], None)
+        if phi is None:
+            phi = self._pop_first(extrinsic_parameters, ["phi", "phase"], 0.0)
+
+        tc_ref = self._get_first(parameters, ["geocent_time", "t_ref"], 0.0)
+        tc_new = self._pop_first(
+            extrinsic_parameters, ["geocent_time", "t_ref"], tc_ref
+        )
+
+        if any(v is None for v in [d_ref, d_new, beta, lambd, psi, inc]):
+            raise ValueError(
+                "Missing parameters for LISA response projection. "
+                "Expected distance, sky location, polarization, and inclination."
             )
-            tc_new = extrinsic_parameters.pop("geocent_time")
-        except:
-            raise ValueError("Missing parameters.")
         
         #Hard Code for now need to confirm this is geocent_time
         #t0=1735300818.
@@ -380,9 +386,10 @@ class ProjectOntoSpaceDetectors(object):
             d_ratio = d_ref / d_new
         elif isinstance(d_ref, np.ndarray) and isinstance(d_new, np.ndarray):
             d_ratio = (d_ref / d_new)[:, np.newaxis]
-            arr_len = len(d_new)
         else:
             raise ValueError("luminosity_distance should be a float or a numpy array.")
+        if not np.isscalar(d_new):
+            arr_len = len(np.atleast_1d(d_new))
         
         
         
@@ -512,6 +519,11 @@ class ProjectOntoSpaceDetectors(object):
         parameters["psi"] = psi
         parameters["geocent_time"] = tc_new
         parameters["dist"] = d_new
+        parameters["theta_jn"] = inc
+        parameters["phase"] = phi
+        parameters["ra"] = lambd
+        parameters["dec"] = beta
+        parameters["luminosity_distance"] = d_new
      
         sample["waveform"] = strains
         sample["parameters"] = parameters

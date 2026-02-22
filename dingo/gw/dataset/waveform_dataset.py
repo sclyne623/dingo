@@ -106,13 +106,13 @@ class WaveformDataset(DingoDataset, torch.utils.data.Dataset):
                     domain=domain,
                     **self.settings["waveform_generator"],
                 )
-            elif LISA_flag:
-                self.waveform_generator = LISAWaveformGenerator(
+            elif BBHx_flag:
+                self.waveform_generator = BBHxWaveformGenerator(
                     domain=domain,
                     **self.settings["waveform_generator"],
                 )
-            elif BBHx_flag:
-                self.waveform_generator = BBHxWaveformGenerator(
+            elif LISA_flag:
+                self.waveform_generator = LISAWaveformGenerator(
                     domain=domain,
                     **self.settings["waveform_generator"],
                 )
