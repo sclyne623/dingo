@@ -231,11 +231,107 @@ class ProjectOntoSpaceDetectors(object):
         self.frozenLISA = lisa_settings["frozenLISA"]
         self.TDIrescaled = lisa_settings["TDIrescaled"]
         self.channels = channels
+
+    @staticmethod
+    def _pop_first(d, keys, default=None):
+        for k in keys:
+            if k in d:
+                return d.pop(k)
+        return default
+
+    @staticmethod
+    def _get_first(d, keys, default=None):
+        for k in keys:
+            if k in d:
+                return d[k]
+        return default
     
 
     def __call__(self, input_sample):
-        
         sample = input_sample.copy()
+
+        # BBHx direct output path: waveform is a flat dict with amp/phase/freqs
+        # instead of per-mode lisabeta dictionaries.
+        is_bbhx_waveform = (
+            isinstance(sample.get("waveform"), dict)
+            and "amp" in sample["waveform"]
+            and "phase" in sample["waveform"]
+            and ("freqs" in sample["waveform"] or "freq" in sample["waveform"])
+        )
+
+        if is_bbhx_waveform:
+            parameters = sample["parameters"].copy()
+            extrinsic_parameters = sample["extrinsic_parameters"].copy()
+
+            # Support both lisabeta-style and bilby-style distance names.
+            d_ref = self._get_first(parameters, ["dist", "luminosity_distance"], 1.0)
+            d_new = self._pop_first(
+                extrinsic_parameters, ["dist", "luminosity_distance"], d_ref
+            )
+            if np.isscalar(d_ref) or np.isscalar(d_new):
+                d_ratio = d_ref / d_new
+            elif isinstance(d_ref, np.ndarray) and isinstance(d_new, np.ndarray):
+                d_ratio = d_ref / d_new
+            else:
+                raise ValueError("luminosity_distance should be a float or numpy array.")
+
+            amp = np.asarray(sample["waveform"]["amp"])
+            phase = np.asarray(sample["waveform"]["phase"])
+            h = amp * np.exp(1j * phase)
+
+            # Apply sampled distance scaling.
+            if np.isscalar(d_ratio):
+                h = h * d_ratio
+            else:
+                d_ratio = np.asarray(d_ratio)
+                if h.ndim == 2 and h.shape[0] == d_ratio.shape[0]:
+                    h = h * d_ratio[:, np.newaxis]
+                elif h.ndim == 3 and h.shape[0] == d_ratio.shape[0]:
+                    h = h * d_ratio[:, np.newaxis, np.newaxis]
+
+            # Map BBHx channels to Dingo LISA channel names.
+            if h.ndim == 1:
+                chan1 = h
+                chan2 = np.zeros_like(h)
+                chan3 = np.zeros_like(h)
+            elif h.ndim == 2:
+                if h.shape[0] >= 3:
+                    chan1, chan2, chan3 = h[0], h[1], h[2]
+                else:
+                    chan1 = h[0]
+                    chan2 = h[1] if h.shape[0] > 1 else np.zeros_like(h[0])
+                    chan3 = np.zeros_like(h[0])
+            elif h.ndim == 3:
+                # Expected shape for batched BBHx output: (batch, channels, freqs)
+                chan1 = h[:, 0, :]
+                chan2 = h[:, 1, :] if h.shape[1] > 1 else np.zeros_like(h[:, 0, :])
+                chan3 = h[:, 2, :] if h.shape[1] > 2 else np.zeros_like(h[:, 0, :])
+            else:
+                raise ValueError(f"Unsupported BBHx waveform shape {h.shape}.")
+
+            strains = {"chan1": chan1, "chan2": chan2}
+            if "chan3" in self.channels:
+                strains["chan3"] = chan3
+
+            # Keep parameter bookkeeping consistent with downstream code.
+            parameters["luminosity_distance"] = d_new
+            parameters["dist"] = d_new
+            for p_key, e_keys in [
+                ("theta_jn", ["theta_jn", "inc"]),
+                ("ra", ["ra", "lambda"]),
+                ("dec", ["dec", "beta"]),
+                ("psi", ["psi"]),
+                ("geocent_time", ["geocent_time"]),
+            ]:
+                val = self._pop_first(extrinsic_parameters, e_keys, None)
+                if val is not None:
+                    parameters[p_key] = val
+
+            sample["waveform"] = strains
+            sample["parameters"] = parameters
+            sample["extrinsic_parameters"] = extrinsic_parameters
+            return sample
+
         for lm in sample["waveform"].keys():
             l = lm[0]
             m = lm[1]
