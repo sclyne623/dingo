@@ -1994,15 +1994,27 @@ class BBHxWaveformGenerator:
         self.transform = transform
         self.frozenLISA = frozenLISA
         self.use_gpu = use_gpu
+        self.orbits = None
         
         # Initialize BBHx waveform generator
         try:
+            # Initialize orbits for GPU if needed
+            response_kwargs = {}
+            if self.use_gpu:
+                try:
+                    from lisatools.detector import EqualArmlengthOrbits
+                    self.orbits = EqualArmlengthOrbits(use_gpu=True)
+                    self.orbits.configure(linear_interp_setup=True)
+                    response_kwargs = dict(orbits=self.orbits)
+                except ImportError:
+                    warnings.warn("GPU mode requires lisatools for orbits. Falling back to CPU response calculation.")
+                    self.use_gpu = False
+            
             self.waveform_gen = BBHWaveformFD(
                 amp_phase_kwargs=dict(run_phenomd=False),
+                response_kwargs=response_kwargs,
                 use_gpu=self.use_gpu,
             )
-            # Initialize LISA response if needed
-            self.response_gen = LISATDIResponse(use_gpu=self.use_gpu)
         except NameError:
             raise ImportError("BBHx is not installed. Please install BBHx to use BBHxWaveformGenerator.")
     
@@ -2025,7 +2037,7 @@ class BBHxWaveformGenerator:
         return self._domain
 
     def generate_amp_phase(
-        self, parameters: Dict[str, float], catch_waveform_errors=True,
+        self, parameters: Dict[str, float], catch_waveform_errors=False,
     ) -> Dict[str, np.ndarray]:
         """Generate GW amplitude and phase using BBHx.
 
@@ -2043,7 +2055,7 @@ class BBHxWaveformGenerator:
                 - (optional) ra, dec, psi: Sky location and polarization
 
         catch_waveform_errors: bool
-            Whether to catch waveform generation errors
+            Whether to catch waveform generation errors (default False for debugging)
 
         Returns
         -------
@@ -2065,23 +2077,26 @@ class BBHxWaveformGenerator:
             chi1z = parameters.get('chi_1z', parameters.get('chi_1', 0.0))
             chi2z = parameters.get('chi_2z', parameters.get('chi_2', 0.0))
             
-            # Convert distance to SI units
+            # Convert distance to SI units (input is in Mpc, output in meters)
             distance_mpc = parameters.get('luminosity_distance', parameters.get('redshift_distance'))
             distance_si = distance_mpc * PC_SI * 1e6
             
             # Orbital parameters
             inc = parameters.get('theta_jn', 0.0)
             phase = parameters.get('phase', 0.0)
-            t_ref = parameters.get('geocent_time', 0.0) * YRSID_SI
+            # geocent_time is in GPS seconds (SI), convert to years for LISA frame
+            geocent_time_gps = parameters.get('geocent_time', 0.0)
+            t_ref = geocent_time_gps * YRSID_SI
             
             # Sky location (for LISA response)
             lam = parameters.get('ra', 0.0)  # ecliptic longitude
             beta = parameters.get('dec', 0.0)  # ecliptic latitude
             psi = parameters.get('psi', 0.0)  # polarization angle
             
-            # Generate frequency grid based on domain
-            freqs = np.linspace(self.domain.f_min, self.domain.f_max, 
-                              int((self.domain.f_max - self.domain.f_min) / self.domain.delta_f) + 1)
+            # Generate frequency grid based on domain using log spacing
+            # Use logspace to match tutorial (which uses np.logspace)
+            num_pts = int((np.log10(self.domain.f_max) - np.log10(self.domain.f_min)) / np.log10(1.0 + self.domain.delta_f)) + 1
+            freqs = np.logspace(np.log10(self.domain.f_min), np.log10(self.domain.f_max), num_pts)
             
             # Generate waveform using BBHx
             waveform_data = self.waveform_gen(
