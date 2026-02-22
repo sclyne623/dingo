@@ -13,7 +13,10 @@ from dingo.core.likelihood import Likelihood
 from dingo.gw.injection import GWSignal
 from dingo.gw.transforms import DecimateWaveformsAndASDS
 from dingo.gw.waveform_generator import WaveformGenerator
-from dingo.gw.waveform_generator.waveform_generator import LISAWaveformGenerator
+from dingo.gw.waveform_generator.waveform_generator import (
+    LISAWaveformGenerator,
+    BBHxWaveformGenerator,
+)
 
 from dingo.gw.domains import (
     UniformFrequencyDomain,
@@ -417,14 +420,20 @@ class StationaryGaussianGWLikelihood(GWSignal, Likelihood):
             # get rho2opt
             rho2opt = rho2opt_const
             for (m, n), c in rho2opt_crossterms.items():
-                if isinstance(self.waveform_generator, LISAWaveformGenerator):
+                if isinstance(
+                    self.waveform_generator,
+                    (LISAWaveformGenerator, BBHxWaveformGenerator),
+                ):
                     rho2opt += (c * np.exp(1j * (n - m) * phase)).real
                 else:
                     rho2opt += (c * np.exp(-1j * (n - m) * phase)).real
             # get kappa2
             kappa2 = 0
             for m in m_vals:
-                if isinstance(self.waveform_generator, LISAWaveformGenerator):
+                if isinstance(
+                    self.waveform_generator,
+                    (LISAWaveformGenerator, BBHxWaveformGenerator),
+                ):
                     kappa2 += (kappa2_modes[m] * np.exp(1j * m * phase)).real
                 else:
                     kappa2 += (kappa2_modes[m] * np.exp(-1j * m * phase)).real

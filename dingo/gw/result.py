@@ -433,7 +433,11 @@ class Result(CoreResult):
         # phase-marginalized likelihood.
 
         # Restrict to samples that are within the prior.
-        if self.metadata["dataset_settings"]["waveform_generator"]["LISA"] is True:
+        waveform_generator_settings = self.metadata["dataset_settings"].get(
+            "waveform_generator", {}
+        )
+        lisa_like = waveform_generator_settings.get("LISA", False) or waveform_generator_settings.get("BBHx", False)
+        if lisa_like:
 
             param_key_dict = {
                 "chirp_mass": "Mchirp",
@@ -441,7 +445,7 @@ class Result(CoreResult):
             }
             inv_param_key_dict = {v: k for k, v in param_key_dict.items()}
 
-            exclude = {"phi", "ra", "dec","luminosity_distance"}
+            exclude = {"phi", "ra", "dec", "luminosity_distance", "dist"}
 
             # Canonical parameter names (prior expects these)
             param_keys = [
@@ -458,7 +462,6 @@ class Result(CoreResult):
 
             # Rename columns BACK to canonical names
             theta = theta_lisa.rename(columns=inv_param_key_dict)
-            print(theta.columns)
             # 🔒 Ensure column order exactly matches prior
             theta = theta[param_keys]
 
@@ -472,7 +475,6 @@ class Result(CoreResult):
         else:
 
             param_keys = [k for k, v in self.prior.items() if not isinstance(v, Constraint)]
-            print(param_keys)
             theta = self.samples[param_keys]
             log_prior = self.prior.ln_prob(theta, axis=0)
             constraints = self.prior.evaluate_constraints(theta)

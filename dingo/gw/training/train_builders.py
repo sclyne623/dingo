@@ -136,6 +136,11 @@ def set_train_transforms(wfd, data_settings, asd_dataset_path, omit_transforms=N
 
     extra_context_parameters = []
     if "gnpe_time_shifts" in data_settings:
+        if data_settings["detector_type"] == "LISA":
+            raise NotImplementedError(
+                "gnpe_time_shifts is currently only supported for ground-based "
+                "detectors, not detector_type='LISA'."
+            )
         d = data_settings["gnpe_time_shifts"]
         transforms.append(
             GNPECoalescenceTimes(

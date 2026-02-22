@@ -396,6 +396,12 @@ class WaveformDataset(DingoDataset, torch.utils.data.Dataset):
             }
             # Feel like this might be messy but this is where we generate the waveforms for on the fly
             if self.polarizations is None:
+                if not hasattr(self, "waveform_generator"):
+                    raise RuntimeError(
+                        "WaveformDataset has no stored polarizations and no on-the-fly "
+                        "waveform generator. Set local_settings.on_fly=True when "
+                        "training with parameter-only LISA/BBHx datasets."
+                    )
                 local_batch_idx = range(len(batched_idx))
                 #num_processes = cpu_count()
                 #if num_processes > 1:

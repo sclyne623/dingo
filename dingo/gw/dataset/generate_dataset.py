@@ -30,6 +30,19 @@ from dingo.gw.waveform_generator import (
 from dingo.core.utils.misc import call_func_strict_output_dim
 
 
+def _add_lisa_parameter_aliases(parameters: pd.DataFrame) -> pd.DataFrame:
+    alias_map = {
+        "chirp_mass": "Mchirp",
+        "mass_ratio": "q",
+        "chi_1": "chi1",
+        "chi_2": "chi2",
+    }
+    for source, alias in alias_map.items():
+        if source in parameters.columns and alias not in parameters.columns:
+            parameters[alias] = parameters[source]
+    return parameters
+
+
 def generate_parameters_and_waveforms(
     waveform_generator: WaveformGenerator,
     prior: BBHPriorDict,
@@ -54,10 +67,8 @@ def generate_parameters_and_waveforms(
     print("Generating dataset of size " + str(num_samples))
     parameters = pd.DataFrame(prior.sample(num_samples))
     
-    if isinstance(waveform_generator, LISAWaveformGenerator):
-    
-    
-        parameters = parameters.rename(columns = {"chirp_mass":"Mchirp", "mass_ratio":"q","chi_1":"chi1","chi_2":"chi2"})
+    if isinstance(waveform_generator, (LISAWaveformGenerator, BBHxWaveformGenerator)):
+        parameters = _add_lisa_parameter_aliases(parameters)
 
     if num_processes > 1:
         with threadpool_limits(limits=1, user_api="blas"):
@@ -116,10 +127,8 @@ def generate_parameters(
     print("Generating dataset of size " + str(num_samples))
     parameters = pd.DataFrame(prior.sample(num_samples))
     
-    if isinstance(waveform_generator, LISAWaveformGenerator):
-    
-    
-        parameters = parameters.rename(columns = {"chirp_mass":"Mchirp", "mass_ratio":"q","chi_1":"chi1","chi_2":"chi2"})
+    if isinstance(waveform_generator, (LISAWaveformGenerator, BBHxWaveformGenerator)):
+        parameters = _add_lisa_parameter_aliases(parameters)
 
     
     #This section is commented out for now.  Need to add back later.

@@ -22,7 +22,8 @@ from dingo.gw.transforms import (
 from dingo.gw.waveform_generator.waveform_generator import (
     WaveformGenerator,
     NewInterfaceWaveformGenerator,
-    LISAWaveformGenerator
+    LISAWaveformGenerator,
+    BBHxWaveformGenerator,
 )
 import lisabeta.tools.pytools as pytools
 
@@ -63,6 +64,8 @@ class GWSignal(object):
         self._check_domains(wfg_domain, data_domain)
         self.data_domain = data_domain
         self.LISA_flag = wfg_kwargs.get("LISA", False)
+        self.BBHx_flag = wfg_kwargs.get("BBHx", False)
+        self.lisa_like_flag = self.LISA_flag or self.BBHx_flag
         self.lisa_settings = lisa_settings
 
         # The waveform generator potentially has a larger frequency range than the
@@ -75,13 +78,17 @@ class GWSignal(object):
             self.waveform_generator = NewInterfaceWaveformGenerator(
                 domain=wfg_domain, **wfg_kwargs
             )
+        elif self.BBHx_flag:
+            self.waveform_generator = BBHxWaveformGenerator(
+                domain=wfg_domain, **wfg_kwargs
+            )
         elif self.LISA_flag:
             self.waveform_generator = LISAWaveformGenerator(domain = wfg_domain, **wfg_kwargs)
         else:
             self.waveform_generator = WaveformGenerator(domain=wfg_domain, **wfg_kwargs)
 
         self.t_ref = t_ref
-        if not self.LISA_flag:
+        if not self.lisa_like_flag:
             self.ifo_list = InterferometerList(ifo_list)
         else:
             self.ifo_list = ifo_list
@@ -168,7 +175,7 @@ class GWSignal(object):
         self._initialize_transform()
 
     def _initialize_transform(self):
-        if self.LISA_flag:
+        if self.lisa_like_flag:
             
             transforms = [ProjectOntoSpaceDetectors("TDIAET",self.data_domain,self.t_ref,self.ifo_list,self.lisa_settings)]
             
@@ -224,6 +231,11 @@ class GWSignal(object):
             
             
             polarizations = self.waveform_generator.generate_amp_phase({**theta_extrinsic,**theta_intrinsic})
+        elif isinstance(self.waveform_generator, BBHxWaveformGenerator):
+            # Generate intrinsic modes and apply detector response in transforms.
+            polarizations = self.waveform_generator.generate_amp_phase_m(
+                {**theta_extrinsic, **theta_intrinsic}
+            )
         else:
             polarizations = self.waveform_generator.generate_hplus_hcross(theta_intrinsic)
             polarizations = {  # truncation, in case wfg has a larger frequency range
@@ -287,6 +299,13 @@ class GWSignal(object):
             
             
             pol_lm = self.waveform_generator.generate_amp_phase({**theta_extrinsic,**theta_intrinsic})
+        elif isinstance(self.waveform_generator, BBHxWaveformGenerator):
+            pol_lm = self.waveform_generator.generate_amp_phase_m(
+                {**theta_extrinsic, **theta_intrinsic}
+            )
+        if isinstance(
+            self.waveform_generator, (LISAWaveformGenerator, BBHxWaveformGenerator)
+        ):
             m_bins = {}
             for lm, pol_data in pol_lm.items():
                 m = int(lm[1]) # Ensure m is an integer key
@@ -362,7 +381,10 @@ class GWSignal(object):
         or an ASDDataset, from which random ASDs are drawn.
         """
         if isinstance(self._asd, np.ndarray):
-            asd = {ifo.name: self._asd for ifo in self.ifo_list}
+            if self.lisa_like_flag:
+                asd = {ifo: self._asd for ifo in self.ifo_list}
+            else:
+                asd = {ifo.name: self._asd for ifo in self.ifo_list}
         elif isinstance(self._asd, dict):
             asd = self._asd
         elif isinstance(self._asd, ASDDataset):
@@ -378,7 +400,9 @@ class GWSignal(object):
 
     @asd.setter
     def asd(self, asd):
-        if isinstance(self.waveform_generator, LISAWaveformGenerator):
+        if isinstance(
+            self.waveform_generator, (LISAWaveformGenerator, BBHxWaveformGenerator)
+        ):
             ifo_names = [ifo for ifo in self.ifo_list]
         else:
             ifo_names = [ifo.name for ifo in self.ifo_list]

@@ -2046,6 +2046,83 @@ class BBHxWaveformGenerator:
     def _to_numpy(x):
         return x.get() if hasattr(x, "get") else np.asarray(x)
 
+    @staticmethod
+    def _get_first(parameters: Dict[str, float], keys, default=None):
+        for key in keys:
+            if key in parameters:
+                return parameters[key]
+        return default
+
+    @staticmethod
+    def _masses_from_chirp_mass_and_q(chirp_mass: float, q: float) -> Tuple[float, float]:
+        # Bilby/Dingo convention: q = m2 / m1 <= 1.
+        m1 = chirp_mass * (1.0 + q) ** (1.0 / 5.0) / (q ** (3.0 / 5.0))
+        m2 = q * m1
+        return m1, m2
+
+    def _parse_parameters(self, parameters: Dict[str, float]) -> Dict[str, float]:
+        m1 = self._get_first(parameters, ["mass_1", "m1"])
+        m2 = self._get_first(parameters, ["mass_2", "m2"])
+        if m1 is None or m2 is None:
+            chirp_mass = self._get_first(parameters, ["chirp_mass", "Mchirp"])
+            q = self._get_first(parameters, ["mass_ratio", "q"])
+            if chirp_mass is None or q is None:
+                raise ValueError(
+                    "BBHxWaveformGenerator requires either (mass_1, mass_2) or "
+                    "(chirp_mass/Mchirp, mass_ratio/q)."
+                )
+            m1, m2 = self._masses_from_chirp_mass_and_q(float(chirp_mass), float(q))
+
+        chi1z = self._get_first(
+            parameters, ["chi_1z", "chi1z", "chi_1", "chi1"], 0.0
+        )
+        chi2z = self._get_first(
+            parameters, ["chi_2z", "chi2z", "chi_2", "chi2"], 0.0
+        )
+
+        distance_mpc = self._get_first(
+            parameters,
+            ["luminosity_distance", "dist", "redshift_distance"],
+            None,
+        )
+        if distance_mpc is None:
+            raise ValueError(
+                "BBHxWaveformGenerator requires luminosity_distance/dist (Mpc)."
+            )
+
+        inc = self._get_first(parameters, ["theta_jn", "inc"], 0.0)
+        phase = self._get_first(parameters, ["phase", "phi"], 0.0)
+        lam = self._get_first(parameters, ["ra", "lambda", "lambd"], 0.0)
+        beta = self._get_first(parameters, ["dec", "beta"], 0.0)
+        psi = self._get_first(parameters, ["psi"], 0.0)
+
+        # BBHx expects t_ref in seconds (SSB frame), matching the tutorial.
+        if "t_ref" in parameters:
+            t_ref = parameters["t_ref"]
+        elif "t_ref_years" in parameters:
+            t_ref = parameters["t_ref_years"] * YRSID_SI
+        elif "geocent_time" in parameters:
+            t_ref = parameters["geocent_time"]
+        else:
+            t_ref = 0.5 * YRSID_SI
+        # Avoid t_ref close to zero (BBHx root-finding issue in PhenomHM).
+        if np.isclose(t_ref, 0.0, atol=1e-3):
+            t_ref = 0.5 * YRSID_SI
+
+        return {
+            "m1": float(m1),
+            "m2": float(m2),
+            "chi1z": float(chi1z),
+            "chi2z": float(chi2z),
+            "distance_mpc": float(distance_mpc),
+            "inc": float(inc),
+            "phase": float(phase),
+            "lam": float(lam),
+            "beta": float(beta),
+            "psi": float(psi),
+            "t_ref": float(t_ref),
+        }
+
     def _build_bbhx_frequency_grid(self) -> np.ndarray:
         """Build a robust log-spaced frequency grid for BBHx.
 
@@ -2095,41 +2172,18 @@ class BBHxWaveformGenerator:
                     parameters, t0=0., frozenLISA=True
                 )
             
-            # Extract and prepare physical parameters
-            m1 = parameters.get('mass_1')
-            m2 = parameters.get('mass_2')
-            chi1z = parameters.get('chi_1z', parameters.get('chi_1', 0.0))
-            chi2z = parameters.get('chi_2z', parameters.get('chi_2', 0.0))
-            
-            # Convert distance to SI units (input is in Mpc, output in meters)
-            distance_mpc = parameters.get('luminosity_distance', parameters.get('redshift_distance'))
-            distance_si = distance_mpc * PC_SI * 1e6
-            
-            # Orbital parameters
-            inc = parameters.get('theta_jn', 0.0)
-            phase = parameters.get('phase', 0.0)
-            # BBHx expects t_ref in seconds (SSB frame), matching the tutorial.
-            # Accept either:
-            #   - t_ref (seconds),
-            #   - t_ref_years (years),
-            #   - geocent_time (seconds),
-            # and default to 0.5 sidereal years in seconds.
-            if "t_ref" in parameters:
-                t_ref = parameters["t_ref"]
-            elif "t_ref_years" in parameters:
-                t_ref = parameters["t_ref_years"] * YRSID_SI
-            elif "geocent_time" in parameters:
-                t_ref = parameters["geocent_time"]
-            else:
-                t_ref = 0.5 * YRSID_SI
-            # Ensure t_ref is not pathologically close to zero (BBHx root-finding issue)
-            if np.isclose(t_ref, 0.0, atol=1e-3):
-                t_ref = 0.5 * YRSID_SI
-            
-            # Sky location (for LISA response)
-            lam = parameters.get('ra', 0.0)  # ecliptic longitude
-            beta = parameters.get('dec', 0.0)  # ecliptic latitude
-            psi = parameters.get('psi', 0.0)  # polarization angle
+            parsed = self._parse_parameters(parameters)
+            m1 = parsed["m1"]
+            m2 = parsed["m2"]
+            chi1z = parsed["chi1z"]
+            chi2z = parsed["chi2z"]
+            distance_si = parsed["distance_mpc"] * PC_SI * 1e6
+            inc = parsed["inc"]
+            phase = parsed["phase"]
+            lam = parsed["lam"]
+            beta = parsed["beta"]
+            psi = parsed["psi"]
+            t_ref = parsed["t_ref"]
             
             # Generate frequency grid based on domain bounds.
             freqs = self._build_bbhx_frequency_grid()
@@ -2198,30 +2252,13 @@ class BBHxWaveformGenerator:
                 parameters, t0=0.0, frozenLISA=True
             )
 
-        # Extract and prepare physical parameters.
-        m1 = parameters.get("mass_1")
-        m2 = parameters.get("mass_2")
-        chi1z = parameters.get("chi_1z", parameters.get("chi_1", 0.0))
-        chi2z = parameters.get("chi_2z", parameters.get("chi_2", 0.0))
-        distance_mpc = parameters.get("luminosity_distance", parameters.get("dist"))
-        if distance_mpc is None:
-            distance_mpc = parameters.get("redshift_distance")
-        if distance_mpc is None:
-            raise ValueError(
-                "BBHxWaveformGenerator requires luminosity_distance/dist (Mpc)."
-            )
-        distance_si = distance_mpc * PC_SI * 1e6
-
-        if "t_ref" in parameters:
-            t_ref = parameters["t_ref"]
-        elif "t_ref_years" in parameters:
-            t_ref = parameters["t_ref_years"] * YRSID_SI
-        elif "geocent_time" in parameters:
-            t_ref = parameters["geocent_time"]
-        else:
-            t_ref = 0.5 * YRSID_SI
-        if np.isclose(t_ref, 0.0, atol=1e-3):
-            t_ref = 0.5 * YRSID_SI
+        parsed = self._parse_parameters(parameters)
+        m1 = parsed["m1"]
+        m2 = parsed["m2"]
+        chi1z = parsed["chi1z"]
+        chi2z = parsed["chi2z"]
+        distance_si = parsed["distance_mpc"] * PC_SI * 1e6
+        t_ref = parsed["t_ref"]
 
         # Keep frequency handling consistent with generate_amp_phase().
         freqs = self._build_bbhx_frequency_grid()
