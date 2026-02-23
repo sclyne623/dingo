@@ -2063,6 +2063,19 @@ class BBHxWaveformGenerator:
         m2 = q * m1
         return m1, m2
 
+    @staticmethod
+    def _broadcast_to_length(x, n: int, name: str):
+        arr = np.asarray(x, dtype=np.float64)
+        if arr.ndim == 0:
+            return np.full(n, float(arr), dtype=np.float64)
+        if arr.size == n:
+            return arr.astype(np.float64, copy=False)
+        if arr.size == 1:
+            return np.full(n, float(arr.ravel()[0]), dtype=np.float64)
+        raise ValueError(
+            f"BBHx parameter '{name}' has incompatible length {arr.size}, expected 1 or {n}."
+        )
+
     def _parse_parameters(self, parameters: Dict[str, float]) -> Dict[str, float]:
         m1 = self._get_first(parameters, ["mass_1", "m1"])
         m2 = self._get_first(parameters, ["mass_2", "m2"])
@@ -2115,18 +2128,21 @@ class BBHxWaveformGenerator:
             t_ref = np.asarray(t_ref, dtype=np.float64)
             t_ref = np.where(np.isclose(t_ref, 0.0, atol=1e-3), 0.5 * YRSID_SI, t_ref)
 
+        m1_arr = np.asarray(m1, dtype=np.float64)
+        n = m1_arr.size if m1_arr.ndim > 0 else 1
+
         return {
-            "m1": m1,
-            "m2": m2,
-            "chi1z": chi1z,
-            "chi2z": chi2z,
-            "distance_mpc": distance_mpc,
-            "inc": inc,
-            "phase": phase,
-            "lam": lam,
-            "beta": beta,
-            "psi": psi,
-            "t_ref": t_ref,
+            "m1": self._broadcast_to_length(m1, n, "m1"),
+            "m2": self._broadcast_to_length(m2, n, "m2"),
+            "chi1z": self._broadcast_to_length(chi1z, n, "chi1z"),
+            "chi2z": self._broadcast_to_length(chi2z, n, "chi2z"),
+            "distance_mpc": self._broadcast_to_length(distance_mpc, n, "distance_mpc"),
+            "inc": self._broadcast_to_length(inc, n, "inc"),
+            "phase": self._broadcast_to_length(phase, n, "phase"),
+            "lam": self._broadcast_to_length(lam, n, "lam"),
+            "beta": self._broadcast_to_length(beta, n, "beta"),
+            "psi": self._broadcast_to_length(psi, n, "psi"),
+            "t_ref": self._broadcast_to_length(t_ref, n, "t_ref"),
         }
 
     def _build_bbhx_frequency_grid(self) -> np.ndarray:
