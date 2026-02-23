@@ -460,24 +460,20 @@ class WaveformDataset(DingoDataset, torch.utils.data.Dataset):
         # structure as before.
 
         if isinstance(data, dict): #Two versions need to be blended better
-            
-            """data = [
-                {
-                    k1: (
-                        {k2: v2[j] for k2, v2 in v1.items()}  # flat structure (parameters or channels)
-                        if all(not isinstance(v2, dict) for v2 in v1.values()) else
-                        {k2: {k3: v3[j] for k3, v3 in v2.items()} for k2, v2 in v1.items()}  # nested dict structure
-                    )
-                    for k1, v1 in data.items()
-                }
-                for j in range(len(batched_idx))
-            ]"""
+            def _extract_batch_item(v, j):
+                if isinstance(v, dict):
+                    return {k: _extract_batch_item(vv, j) for k, vv in v.items()}
+                if np.isscalar(v):
+                    return v
+                try:
+                    return v[j]
+                except Exception:
+                    return v
 
-             # This is the original version.
             data = [
-            {k1: {k2: v2[j] for k2, v2 in v1.items()} for k1, v1 in data.items()}
-            for j in range(len(batched_idx))
-        ]
+                {k1: _extract_batch_item(v1, j) for k1, v1 in data.items()}
+                for j in range(len(batched_idx))
+            ]
         elif isinstance(data, list):
             data = [
                 [data[i][j] for i in range(len(data))] for j in range(len(batched_idx))
