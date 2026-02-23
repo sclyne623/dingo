@@ -2201,6 +2201,8 @@ class BBHxWaveformGenerator:
             
             # Interpolate BBHx output onto the Dingo domain grid.
             freqs = self._get_output_frequency_grid()
+            if self.use_gpu:
+                freqs = self.waveform_gen.xp.asarray(freqs)
             
             # Generate waveform using BBHx
             waveform_data = self.waveform_gen(
@@ -2276,6 +2278,8 @@ class BBHxWaveformGenerator:
 
         # Keep frequency handling consistent with generate_amp_phase().
         freqs = self._build_bbhx_frequency_grid()
+        if self.use_gpu:
+            freqs = self.waveform_gen.xp.asarray(freqs)
 
         # Use BBHx intrinsic amp/phase/tf generator directly. This keeps detector
         # response application in Dingo transforms (same approach as LISABeta path).
