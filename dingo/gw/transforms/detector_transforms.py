@@ -247,6 +247,9 @@ class GenerateBBHxDirectResponse(object):
                 return h
             raise ValueError(f"Unsupported BBHx waveform shape {tuple(h.shape)}.")
 
+        # Explicitly handle CuPy arrays in CPU/Numpy path.
+        if hasattr(h, "get"):
+            h = h.get()
         h = np.asarray(h)
         if h.ndim == 1:
             return h[np.newaxis, np.newaxis, :]
