@@ -45,7 +45,7 @@ class SVDBasis(DingoDataset):
             Number of basis elements to keep.
             n=0 keeps all basis elements.
         method: str
-            Select SVD method, 'random' or 'scipy'
+            Select SVD method, e.g. 'random', 'svds', or 'scipy'.
         """
         if method == "random":
             if n == 0:
@@ -77,6 +77,29 @@ class SVDBasis(DingoDataset):
                 self.V = V[:, :n]
                 self.Vh = Vh[:n, :]
 
+            self.n = len(self.Vh)
+            self.s = s
+        elif method == "svds":
+            max_rank = min(training_data.shape) - 1
+            if max_rank < 1:
+                raise ValueError(
+                    "Training data shape is too small for svds. "
+                    f"Got shape={training_data.shape}."
+                )
+            if n == 0:
+                k = max_rank
+            else:
+                k = min(n, max_rank)
+
+            _, s, Vh = svds(training_data, k=k)
+            # svds returns singular values in ascending order.
+            idx = s.argsort()[::-1]
+            s = s[idx]
+            Vh = Vh[idx, :]
+            V = Vh.T.conj()
+
+            self.V = V
+            self.Vh = Vh
             self.n = len(self.Vh)
             self.s = s
         elif method == "cupy":

@@ -245,6 +245,7 @@ def build_svd_for_embedding_network(
     num_validation_samples: int,
     num_workers: int = 0,
     batch_size: int = 1000,
+    method: str = "svds",
     out_dir: Optional[str] = None,
 ) -> List:
     """
@@ -266,6 +267,8 @@ def build_svd_for_embedding_network(
     num_validation_samples : int
     num_workers : int
     batch_size : int
+    method : str
+        SVD backend passed to SVDBasis.generate_basis.
     out_dir : str
         SVD performance diagnostics are saved here.
 
@@ -321,7 +324,7 @@ def build_svd_for_embedding_network(
     loader = DataLoader(
         wfd,
         batch_size=batch_size,
-        num_workers=num_workers,
+        num_workers=0,
         worker_init_fn=fix_random_seeds,
     )
     with threadpool_limits(limits=1, user_api="blas"):
@@ -348,9 +351,10 @@ def build_svd_for_embedding_network(
     print("Generating SVD basis for ifo:")
     time_start = time.time()
     basis_dict = {}
+    print(f"...using SVD method: {method}")
     for ifo in ifos:
         basis = SVDBasis()
-        basis.generate_basis(waveforms[ifo][:num_training_samples], size, "scipy")
+        basis.generate_basis(waveforms[ifo][:num_training_samples], size, method)
         basis_dict[ifo] = basis
         print(f"...{ifo} done.")
     print(f"...this took {time.time() - time_start:.0f} s.")
