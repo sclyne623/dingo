@@ -2238,12 +2238,20 @@ class BBHxWaveformGenerator:
             # Package waveform data. Keep all returned channels (A/E/T) rather than
             # indexing a single channel.
             waveform_data = self._to_numpy(waveform_data)
-            wf_dict = {
-                "waveform": waveform_data,
-                "amp": np.abs(waveform_data),
-                "phase": np.angle(waveform_data),
-                "freqs": freqs,
-            }
+            if self.direct_response:
+                # Training direct-response path consumes detector-frame waveform only.
+                # Skip unused amp/phase construction to reduce per-batch overhead.
+                wf_dict = {
+                    "waveform": waveform_data,
+                    "freqs": freqs,
+                }
+            else:
+                wf_dict = {
+                    "waveform": waveform_data,
+                    "amp": np.abs(waveform_data),
+                    "phase": np.angle(waveform_data),
+                    "freqs": freqs,
+                }
             
             return wf_dict
             
