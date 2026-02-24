@@ -13,7 +13,6 @@ import dingo.core.utils as utils
 from torch.utils.data import Dataset
 import time
 import numpy as np
-from threadpoolctl import threadpool_limits
 import dingo.core.utils.trainutils
 import json
 from collections import OrderedDict
@@ -371,6 +370,8 @@ class BasePosteriorModel(ABC):
         use_wandb=False,
         test_only=False,
         early_stopping: Optional[EarlyStopping] = None,
+        train_print_freq: int = 50,
+        test_print_freq: int = 50,
     ):
         """
 
@@ -393,7 +394,9 @@ class BasePosteriorModel(ABC):
         """
 
         if test_only:
-            test_loss = test_epoch(self, test_loader)
+            test_loss = test_epoch(
+                self, test_loader, print_freq=max(1, int(test_print_freq))
+            )
             print(f"test loss: {test_loss:.3f}")
 
         else:
@@ -402,29 +405,32 @@ class BasePosteriorModel(ABC):
 
                 # Training
                 lr = utils.get_lr(self.optimizer)
-                with threadpool_limits(limits=1, user_api="blas"):
-                    print(f"\nStart training epoch {self.epoch} with lr {lr}")
-                    time_start = time.time()
-                    train_loss = train_epoch(self, train_loader)
-                    train_time = time.time() - time_start
+                print(f"\nStart training epoch {self.epoch} with lr {lr}")
+                time_start = time.time()
+                train_loss = train_epoch(
+                    self, train_loader, print_freq=max(1, int(train_print_freq))
+                )
+                train_time = time.time() - time_start
 
-                    print(
-                        "Done. This took {:2.0f}:{:2.0f} min.".format(
-                            *divmod(train_time, 60)
-                        )
+                print(
+                    "Done. This took {:2.0f}:{:2.0f} min.".format(
+                        *divmod(train_time, 60)
                     )
+                )
 
-                    # Testing
-                    print(f"Start testing epoch {self.epoch}")
-                    time_start = time.time()
-                    test_loss = test_epoch(self, test_loader)
-                    test_time = time.time() - time_start
+                # Testing
+                print(f"Start testing epoch {self.epoch}")
+                time_start = time.time()
+                test_loss = test_epoch(
+                    self, test_loader, print_freq=max(1, int(test_print_freq))
+                )
+                test_time = time.time() - time_start
 
-                    print(
-                        "Done. This took {:2.0f}:{:2.0f} min.".format(
-                            *divmod(time.time() - time_start, 60)
-                        )
+                print(
+                    "Done. This took {:2.0f}:{:2.0f} min.".format(
+                        *divmod(time.time() - time_start, 60)
                     )
+                )
 
                 # scheduler step for learning rate
                 utils.perform_scheduler_step(self.scheduler, test_loss)
@@ -469,14 +475,14 @@ class BasePosteriorModel(ABC):
                 print(f"Finished training epoch {self.epoch}.\n")
 
 
-def train_epoch(pm, dataloader):
+def train_epoch(pm, dataloader, print_freq: int = 1):
     pm.network.train()
     loss_info = dingo.core.utils.trainutils.LossInfo(
         pm.epoch,
         len(dataloader.dataset),
         dataloader.batch_size,
         mode="Train",
-        print_freq=1,
+        print_freq=print_freq,
     )
 
     for batch_idx, data in enumerate(dataloader):
@@ -496,7 +502,7 @@ def train_epoch(pm, dataloader):
     return loss_info.get_avg()
 
 
-def test_epoch(pm, dataloader):
+def test_epoch(pm, dataloader, print_freq: int = 1):
     with torch.no_grad():
         pm.network.eval()
         loss_info = dingo.core.utils.trainutils.LossInfo(
@@ -504,7 +510,7 @@ def test_epoch(pm, dataloader):
             len(dataloader.dataset),
             dataloader.batch_size,
             mode="Test",
-            print_freq=1,
+            print_freq=print_freq,
         )
 
         for batch_idx, data in enumerate(dataloader):

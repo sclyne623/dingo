@@ -376,6 +376,8 @@ def train_stages(
             use_wandb=local_settings.get("wandb", False),
             test_only=local_settings.get("test_only", False),
             early_stopping=early_stopping,
+            train_print_freq=local_settings.get("train_print_freq", 50),
+            test_print_freq=local_settings.get("test_print_freq", 50),
         )
         # if test_only, model should not be saved, and run is complete
         if local_settings.get("test_only", False):

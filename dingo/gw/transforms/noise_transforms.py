@@ -12,29 +12,63 @@ class SampleNoiseASD(object):
     Sample a batch of random ASDs for each detector and place them in sample['asds'].
     """
 
-    def __init__(self, asd_dataset):
+    def __init__(self, asd_dataset, gpu_cache: bool = False):
         self.asd_dataset = asd_dataset
+        self.gpu_cache = bool(gpu_cache)
+        self._gpu_cache = {}
+
+    def _get_cached_asd_tensors(self, target_device, target_dtype):
+        cache_key = (str(target_device), str(target_dtype))
+        if cache_key not in self._gpu_cache:
+            self._gpu_cache[cache_key] = {
+                ifo: torch.as_tensor(asd_bank, device=target_device, dtype=target_dtype)
+                for ifo, asd_bank in self.asd_dataset.asds.items()
+            }
+        return self._gpu_cache[cache_key]
 
     def __call__(self, input_sample):
         sample = input_sample.copy()
         batched, batch_size = get_batch_size_of_input_sample(input_sample)
-        sample["asds"] = self.asd_dataset.sample_random_asds(n=batch_size)
-        # CUDA fast-path: keep whitening/noise/repack on-device if waveform already
-        # resides on GPU.
         waveform = sample.get("waveform", {})
-        if isinstance(waveform, dict) and len(waveform) > 0:
-            first_waveform = next(iter(waveform.values()))
-            if isinstance(first_waveform, torch.Tensor):
-                target_device = first_waveform.device
-                target_dtype = (
-                    first_waveform.real.dtype
-                    if first_waveform.is_complex()
-                    else first_waveform.dtype
-                )
-                sample["asds"] = {
-                    k: torch.as_tensor(v, device=target_device, dtype=target_dtype)
-                    for k, v in sample["asds"].items()
-                }
+        first_waveform = next(iter(waveform.values())) if isinstance(waveform, dict) and len(waveform) > 0 else None
+
+        if (
+            self.gpu_cache
+            and isinstance(first_waveform, torch.Tensor)
+            and first_waveform.device.type == "cuda"
+        ):
+            target_device = first_waveform.device
+            target_dtype = (
+                first_waveform.real.dtype
+                if first_waveform.is_complex()
+                else first_waveform.dtype
+            )
+            cached = self._get_cached_asd_tensors(target_device, target_dtype)
+            if batched:
+                sample["asds"] = {}
+                for ifo, asd_bank in cached.items():
+                    idx = np.random.choice(asd_bank.shape[0], batch_size, replace=True)
+                    idx_t = torch.as_tensor(idx, device=target_device, dtype=torch.long)
+                    sample["asds"][ifo] = asd_bank.index_select(0, idx_t)
+            else:
+                sample["asds"] = {}
+                for ifo, asd_bank in cached.items():
+                    idx = np.random.choice(asd_bank.shape[0], 1, replace=True)[0]
+                    sample["asds"][ifo] = asd_bank[idx]
+            return sample
+
+        sample["asds"] = self.asd_dataset.sample_random_asds(n=batch_size)
+        if isinstance(first_waveform, torch.Tensor):
+            target_device = first_waveform.device
+            target_dtype = (
+                first_waveform.real.dtype
+                if first_waveform.is_complex()
+                else first_waveform.dtype
+            )
+            sample["asds"] = {
+                k: torch.as_tensor(v, device=target_device, dtype=target_dtype)
+                for k, v in sample["asds"].items()
+            }
         if not batched:
             sample["asds"] = {k: v[0] for k, v in sample["asds"].items()}
 

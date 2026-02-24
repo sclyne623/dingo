@@ -212,7 +212,12 @@ def set_train_transforms(wfd, data_settings, asd_dataset_path, omit_transforms=N
             transforms.append(ProjectOntoSpaceDetectors("TDIAET",domain, ref_time,data_settings["detectors"],data_settings["lisa_settings"])) #Hard Coded need to change
     else:
         transforms.append(ProjectOntoDetectors(ifo_list, domain, ref_time))
-    transforms.append(SampleNoiseASD(asd_dataset))
+    transforms.append(
+        SampleNoiseASD(
+            asd_dataset,
+            gpu_cache=use_gpu_fastpath_for_this_transform,
+        )
+    )
     transforms.append(WhitenAndScaleStrain(domain.noise_std))
     # We typically add white detector noise. For debugging purposes, this can be turned
     # off with zero_noise option in data_settings.
