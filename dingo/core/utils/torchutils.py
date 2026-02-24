@@ -215,12 +215,23 @@ def build_train_and_test_loaders(
         dataset, train_fraction
     )
 
-    # Build DataLoaders
+    # Build DataLoaders.
+    # If dataset items are already CUDA tensors (BBHx GPU fast-path), avoid worker
+    # multiprocessing and pinning, which are CPU tensor optimizations.
+    output_on_cuda = bool(getattr(dataset, "output_on_cuda", False))
+    if output_on_cuda and num_workers != 0:
+        print(
+            "Dataset outputs CUDA tensors. Forcing num_workers=0 to avoid "
+            "CUDA multiprocessing instability in DataLoader workers."
+        )
+        num_workers = 0
+    pin_memory = not output_on_cuda
+
     train_loader = DataLoader(
         train_dataset,
         batch_size=batch_size,
         shuffle=True,
-        pin_memory=True,
+        pin_memory=pin_memory,
         num_workers=num_workers,
         worker_init_fn=fix_random_seeds,
     )
@@ -228,7 +239,7 @@ def build_train_and_test_loaders(
         test_dataset,
         batch_size=batch_size,
         shuffle=False,
-        pin_memory=True,
+        pin_memory=pin_memory,
         num_workers=num_workers,
         worker_init_fn=fix_random_seeds,
     )

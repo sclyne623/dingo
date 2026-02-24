@@ -212,7 +212,7 @@ class GenerateBBHxDirectResponse(object):
     generation on GPU.
     """
 
-    def __init__(self, waveform_generator, channels):
+    def __init__(self, waveform_generator, channels, gpu_fastpath=False):
         from dingo.gw.waveform_generator.waveform_generator import BBHxWaveformGenerator
 
         if not isinstance(waveform_generator, BBHxWaveformGenerator):
@@ -221,6 +221,12 @@ class GenerateBBHxDirectResponse(object):
             )
         self.waveform_generator = waveform_generator
         self.channels = channels
+        self.gpu_fastpath = bool(gpu_fastpath)
+        self.device = torch.device(
+            "cuda"
+            if self.gpu_fastpath and getattr(self.waveform_generator, "use_gpu", False)
+            else "cpu"
+        )
 
     @staticmethod
     def _get_first(d, keys, default=None):
@@ -231,6 +237,16 @@ class GenerateBBHxDirectResponse(object):
 
     @staticmethod
     def _normalize_waveform_shape(h):
+        if isinstance(h, torch.Tensor):
+            if h.ndim == 1:
+                return h.unsqueeze(0).unsqueeze(0)
+            if h.ndim == 2:
+                # Single sample with channel axis.
+                return h.unsqueeze(0)
+            if h.ndim == 3:
+                return h
+            raise ValueError(f"Unsupported BBHx waveform shape {tuple(h.shape)}.")
+
         h = np.asarray(h)
         if h.ndim == 1:
             return h[np.newaxis, np.newaxis, :]
@@ -240,6 +256,20 @@ class GenerateBBHxDirectResponse(object):
         if h.ndim == 3:
             return h
         raise ValueError(f"Unsupported BBHx waveform shape {h.shape}.")
+
+    def _to_torch_waveform(self, h):
+        if isinstance(h, torch.Tensor):
+            t = h
+        elif hasattr(h, "__dlpack__"):
+            t = torch.utils.dlpack.from_dlpack(h)
+        elif hasattr(h, "get"):
+            t = torch.from_numpy(np.asarray(h.get()))
+        else:
+            t = torch.from_numpy(np.asarray(h))
+
+        if self.device.type == "cuda":
+            t = t.to(self.device, non_blocking=True)
+        return self._normalize_waveform_shape(t)
 
     def __call__(self, input_sample):
         sample = input_sample.copy()
@@ -252,11 +282,18 @@ class GenerateBBHxDirectResponse(object):
         wf = self.waveform_generator.generate_amp_phase(
             full_parameters, catch_waveform_errors=False
         )
-        h = self._normalize_waveform_shape(wf["waveform"])
+        if self.gpu_fastpath:
+            h = self._to_torch_waveform(wf["waveform"])
+        else:
+            h = self._normalize_waveform_shape(wf["waveform"])
 
         chan1 = h[:, 0, :]
-        chan2 = h[:, 1, :] if h.shape[1] > 1 else np.zeros_like(chan1)
-        chan3 = h[:, 2, :] if h.shape[1] > 2 else np.zeros_like(chan1)
+        if isinstance(h, torch.Tensor):
+            chan2 = h[:, 1, :] if h.shape[1] > 1 else torch.zeros_like(chan1)
+            chan3 = h[:, 2, :] if h.shape[1] > 2 else torch.zeros_like(chan1)
+        else:
+            chan2 = h[:, 1, :] if h.shape[1] > 1 else np.zeros_like(chan1)
+            chan3 = h[:, 2, :] if h.shape[1] > 2 else np.zeros_like(chan1)
 
         strains = {"chan1": chan1, "chan2": chan2}
         if "chan3" in self.channels:

@@ -185,6 +185,12 @@ def set_train_transforms(wfd, data_settings, asd_dataset_path, omit_transforms=N
         waveform_generator_settings.get("BBHx", False)
         and waveform_generator_settings.get("direct_response", False)
     )
+    bbhx_gpu_fastpath = (
+        bbhx_direct_response
+        and waveform_generator_settings.get("gpu_fastpath", False)
+        and hasattr(wfd, "waveform_generator")
+        and getattr(wfd.waveform_generator, "use_gpu", False)
+    )
     if data_settings["detector_type"] == "LISA":
         if bbhx_direct_response:
             if not hasattr(wfd, "waveform_generator"):
@@ -196,6 +202,7 @@ def set_train_transforms(wfd, data_settings, asd_dataset_path, omit_transforms=N
                 GenerateBBHxDirectResponse(
                     wfd.waveform_generator,
                     data_settings["detectors"],
+                    gpu_fastpath=bbhx_gpu_fastpath,
                 )
             )
         else:
@@ -234,6 +241,9 @@ def set_train_transforms(wfd, data_settings, asd_dataset_path, omit_transforms=N
         transforms = [t for t in transforms if type(t) not in omit_transforms]
 
     wfd.transform = torchvision.transforms.Compose(transforms)
+    # Used by DataLoader builder to disable pin_memory and worker multiprocessing
+    # when dataset items are already CUDA tensors.
+    wfd.output_on_cuda = bool(bbhx_gpu_fastpath and omit_transforms is None)
 
 
 def build_svd_for_embedding_network(

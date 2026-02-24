@@ -2002,6 +2002,7 @@ class BBHxWaveformGenerator:
         self.frozenLISA = frozenLISA
         self.use_gpu = use_gpu
         self.direct_response = bool(kwargs.get("direct_response", False))
+        self.gpu_fastpath = bool(kwargs.get("gpu_fastpath", False))
         self.bbhx_length = int(kwargs.get("bbhx_length", 1024))
         self.orbits = None
         
@@ -2237,19 +2238,25 @@ class BBHxWaveformGenerator:
             
             # Package waveform data. Keep all returned channels (A/E/T) rather than
             # indexing a single channel.
-            waveform_data = self._to_numpy(waveform_data)
+            if self.direct_response and self.gpu_fastpath:
+                # Keep backend array type (e.g., CuPy) for CUDA fast-path transforms.
+                waveform_payload = waveform_data
+            else:
+                waveform_payload = self._to_numpy(waveform_data)
+
             if self.direct_response:
                 # Training direct-response path consumes detector-frame waveform only.
                 # Skip unused amp/phase construction to reduce per-batch overhead.
                 wf_dict = {
-                    "waveform": waveform_data,
+                    "waveform": waveform_payload,
                     "freqs": freqs,
                 }
             else:
+                waveform_payload = self._to_numpy(waveform_data)
                 wf_dict = {
-                    "waveform": waveform_data,
-                    "amp": np.abs(waveform_data),
-                    "phase": np.angle(waveform_data),
+                    "waveform": waveform_payload,
+                    "amp": np.abs(waveform_payload),
+                    "phase": np.angle(waveform_payload),
                     "freqs": freqs,
                 }
             

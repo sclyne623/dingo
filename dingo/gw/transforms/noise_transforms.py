@@ -19,6 +19,22 @@ class SampleNoiseASD(object):
         sample = input_sample.copy()
         batched, batch_size = get_batch_size_of_input_sample(input_sample)
         sample["asds"] = self.asd_dataset.sample_random_asds(n=batch_size)
+        # CUDA fast-path: keep whitening/noise/repack on-device if waveform already
+        # resides on GPU.
+        waveform = sample.get("waveform", {})
+        if isinstance(waveform, dict) and len(waveform) > 0:
+            first_waveform = next(iter(waveform.values()))
+            if isinstance(first_waveform, torch.Tensor):
+                target_device = first_waveform.device
+                target_dtype = (
+                    first_waveform.real.dtype
+                    if first_waveform.is_complex()
+                    else first_waveform.dtype
+                )
+                sample["asds"] = {
+                    k: torch.as_tensor(v, device=target_device, dtype=target_dtype)
+                    for k, v in sample["asds"].items()
+                }
         if not batched:
             sample["asds"] = {k: v[0] for k, v in sample["asds"].items()}
 
@@ -149,10 +165,20 @@ class WhitenAndScaleStrain(object):
                 f'those of asds, {sample["asds"].keys()}.'
             )
         
-        whitened_strains = {
-            ifo: sample["waveform"][ifo] / (sample["asds"][ifo] * self.scale_factor)
-            for ifo in ifos
-        }
+        first_waveform = sample["waveform"][next(iter(ifos))]
+        if isinstance(first_waveform, torch.Tensor):
+            whitened_strains = {}
+            for ifo in ifos:
+                asd = sample["asds"][ifo]
+                scale = torch.as_tensor(
+                    self.scale_factor, device=asd.device, dtype=asd.dtype
+                )
+                whitened_strains[ifo] = sample["waveform"][ifo] / (asd * scale)
+        else:
+            whitened_strains = {
+                ifo: sample["waveform"][ifo] / (sample["asds"][ifo] * self.scale_factor)
+                for ifo in ifos
+            }
         sample["waveform"] = whitened_strains
         return sample
 
@@ -170,18 +196,23 @@ class AddWhiteNoiseComplex(object):
         sample = input_sample.copy()
         noisy_strains = {}
         for ifo, pure_strain in sample["waveform"].items():
-            # Use torch rng and convert to numpy, which is slightly faster than using
-            # numpy directly. Using torch.randn gives single-precision floats by default
-            # (which we want)  whereas np.random.random gives double precision (and
-            # must subsequently  be cast to single precision).
-            # np.random.default_rng().standard_normal() can be set to output single
-            # precision, but in testing this is slightly slower than the torch call.
-            noise = (
-                torch.randn(pure_strain.shape, device=torch.device("cpu"))
-                + torch.randn(pure_strain.shape, device=torch.device("cpu")) * 1j
-            )
-            noise = noise.numpy()
-            noisy_strains[ifo] = pure_strain + noise
+            if isinstance(pure_strain, torch.Tensor):
+                noise = torch.complex(
+                    torch.randn_like(pure_strain.real),
+                    torch.randn_like(pure_strain.real),
+                ).to(dtype=pure_strain.dtype)
+                noisy_strains[ifo] = pure_strain + noise
+            else:
+                # Use torch rng and convert to numpy, which is slightly faster than using
+                # numpy directly. Using torch.randn gives single-precision floats by default
+                # (which we want)  whereas np.random.random gives double precision (and
+                # must subsequently  be cast to single precision).
+                noise = (
+                    torch.randn(pure_strain.shape, device=torch.device("cpu"))
+                    + torch.randn(pure_strain.shape, device=torch.device("cpu")) * 1j
+                )
+                noise = noise.numpy()
+                noisy_strains[ifo] = pure_strain + noise
         sample["waveform"] = noisy_strains
         return sample
 
@@ -202,25 +233,46 @@ class RepackageStrainsAndASDS(object):
 
     def __call__(self, input_sample):
         sample = input_sample.copy()
-        strains = np.empty(
-            sample["asds"][self.ifos[0]].shape[:-1]  # Possible batch dims
-            + (
-                len(self.ifos),
-                3,
-                sample["asds"][self.ifos[0]].shape[-1] - self.first_index,
-            ),
-            dtype=np.float32,
-        )
-        for idx_ifo, ifo in enumerate(self.ifos):
-            strains[..., idx_ifo, 0, :] = sample["waveform"][ifo][
-                ..., self.first_index :
-            ].real
-            strains[..., idx_ifo, 1, :] = sample["waveform"][ifo][
-                ..., self.first_index :
-            ].imag
-            strains[..., idx_ifo, 2, :] = 1 / (
-                sample["asds"][ifo][..., self.first_index :] * 1e23
+        asd_ref = sample["asds"][self.ifos[0]]
+        if isinstance(asd_ref, torch.Tensor):
+            strains = torch.empty(
+                asd_ref.shape[:-1]
+                + (
+                    len(self.ifos),
+                    3,
+                    asd_ref.shape[-1] - self.first_index,
+                ),
+                dtype=torch.float32,
+                device=asd_ref.device,
             )
+            for idx_ifo, ifo in enumerate(self.ifos):
+                waveform = sample["waveform"][ifo][..., self.first_index :]
+                asd = sample["asds"][ifo][..., self.first_index :]
+                strains[..., idx_ifo, 0, :] = waveform.real.to(dtype=torch.float32)
+                strains[..., idx_ifo, 1, :] = waveform.imag.to(dtype=torch.float32)
+                strains[..., idx_ifo, 2, :] = (1.0 / (asd * 1e23)).to(
+                    dtype=torch.float32
+                )
+        else:
+            strains = np.empty(
+                asd_ref.shape[:-1]  # Possible batch dims
+                + (
+                    len(self.ifos),
+                    3,
+                    asd_ref.shape[-1] - self.first_index,
+                ),
+                dtype=np.float32,
+            )
+            for idx_ifo, ifo in enumerate(self.ifos):
+                strains[..., idx_ifo, 0, :] = sample["waveform"][ifo][
+                    ..., self.first_index :
+                ].real
+                strains[..., idx_ifo, 1, :] = sample["waveform"][ifo][
+                    ..., self.first_index :
+                ].imag
+                strains[..., idx_ifo, 2, :] = 1 / (
+                    sample["asds"][ifo][..., self.first_index :] * 1e23
+                )
         sample["waveform"] = strains
         return sample
 
