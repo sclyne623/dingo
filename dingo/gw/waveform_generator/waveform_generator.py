@@ -2005,6 +2005,8 @@ class BBHxWaveformGenerator:
         self.gpu_fastpath = bool(kwargs.get("gpu_fastpath", False))
         self.bbhx_length = int(kwargs.get("bbhx_length", 1024))
         self.orbits = None
+        self._cached_output_freqs_cpu = None
+        self._cached_output_freqs_backend = None
         
         # Initialize BBHx waveform generator
         try:
@@ -2041,6 +2043,8 @@ class BBHxWaveformGenerator:
         # For now, assume BBHx always generates in frequency domain
         self._use_base_domain = False
         self._domain_transform = None
+        self._cached_output_freqs_cpu = None
+        self._cached_output_freqs_backend = None
 
     @property
     def full_domain(self):
@@ -2168,6 +2172,18 @@ class BBHxWaveformGenerator:
             return np.asarray(self.domain.base_domain.sample_frequencies, dtype=np.float64)
         return self._build_bbhx_frequency_grid()
 
+    def _get_cached_backend_frequency_grid(self):
+        """Return cached output frequencies in backend array type."""
+        if self._cached_output_freqs_cpu is None:
+            self._cached_output_freqs_cpu = self._get_output_frequency_grid()
+        if not self.use_gpu:
+            return self._cached_output_freqs_cpu
+        if self._cached_output_freqs_backend is None:
+            self._cached_output_freqs_backend = self.waveform_gen.xp.asarray(
+                self._cached_output_freqs_cpu
+            )
+        return self._cached_output_freqs_backend
+
     def generate_amp_phase(
         self, parameters: Dict[str, float], catch_waveform_errors=False,
     ) -> Dict[str, np.ndarray]:
@@ -2217,9 +2233,7 @@ class BBHxWaveformGenerator:
             t_ref = parsed["t_ref"]
             
             # Interpolate BBHx output onto the Dingo domain grid.
-            freqs = self._get_output_frequency_grid()
-            if self.use_gpu:
-                freqs = self.waveform_gen.xp.asarray(freqs)
+            freqs = self._get_cached_backend_frequency_grid()
             
             # Generate waveform using BBHx
             waveform_data = self.waveform_gen(
