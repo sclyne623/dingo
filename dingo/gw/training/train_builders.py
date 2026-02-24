@@ -191,6 +191,9 @@ def set_train_transforms(wfd, data_settings, asd_dataset_path, omit_transforms=N
         and hasattr(wfd, "waveform_generator")
         and getattr(wfd.waveform_generator, "use_gpu", False)
     )
+    # SVD initialization intentionally omits downstream formatting/noise transforms
+    # and expects CPU numpy arrays. Keep GPU fast-path for full train/test transforms.
+    use_gpu_fastpath_for_this_transform = bbhx_gpu_fastpath and omit_transforms is None
     if data_settings["detector_type"] == "LISA":
         if bbhx_direct_response:
             if not hasattr(wfd, "waveform_generator"):
@@ -202,7 +205,7 @@ def set_train_transforms(wfd, data_settings, asd_dataset_path, omit_transforms=N
                 GenerateBBHxDirectResponse(
                     wfd.waveform_generator,
                     data_settings["detectors"],
-                    gpu_fastpath=bbhx_gpu_fastpath,
+                    gpu_fastpath=use_gpu_fastpath_for_this_transform,
                 )
             )
         else:
@@ -243,7 +246,7 @@ def set_train_transforms(wfd, data_settings, asd_dataset_path, omit_transforms=N
     wfd.transform = torchvision.transforms.Compose(transforms)
     # Used by DataLoader builder to disable pin_memory and worker multiprocessing
     # when dataset items are already CUDA tensors.
-    wfd.output_on_cuda = bool(bbhx_gpu_fastpath and omit_transforms is None)
+    wfd.output_on_cuda = bool(use_gpu_fastpath_for_this_transform)
 
 
 def build_svd_for_embedding_network(
