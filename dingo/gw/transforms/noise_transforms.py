@@ -47,13 +47,18 @@ class SampleNoiseASD(object):
             if batched:
                 sample["asds"] = {}
                 for ifo, asd_bank in cached.items():
-                    idx = np.random.choice(asd_bank.shape[0], batch_size, replace=True)
-                    idx_t = torch.as_tensor(idx, device=target_device, dtype=torch.long)
+                    idx_t = torch.randint(
+                        0, asd_bank.shape[0], (batch_size,), device=target_device
+                    )
                     sample["asds"][ifo] = asd_bank.index_select(0, idx_t)
             else:
                 sample["asds"] = {}
                 for ifo, asd_bank in cached.items():
-                    idx = np.random.choice(asd_bank.shape[0], 1, replace=True)[0]
+                    idx = int(
+                        torch.randint(
+                            0, asd_bank.shape[0], (1,), device=target_device
+                        ).item()
+                    )
                     sample["asds"][ifo] = asd_bank[idx]
             return sample
 
@@ -189,6 +194,7 @@ class WhitenAndScaleStrain(object):
 
     def __init__(self, scale_factor):
         self.scale_factor = scale_factor
+        self._scale_cache = {}
 
     def __call__(self, input_sample):
         sample = input_sample.copy()
@@ -204,9 +210,12 @@ class WhitenAndScaleStrain(object):
             whitened_strains = {}
             for ifo in ifos:
                 asd = sample["asds"][ifo]
-                scale = torch.as_tensor(
-                    self.scale_factor, device=asd.device, dtype=asd.dtype
-                )
+                scale_key = (str(asd.device), asd.dtype)
+                if scale_key not in self._scale_cache:
+                    self._scale_cache[scale_key] = torch.as_tensor(
+                        self.scale_factor, device=asd.device, dtype=asd.dtype
+                    )
+                scale = self._scale_cache[scale_key]
                 whitened_strains[ifo] = sample["waveform"][ifo] / (asd * scale)
         else:
             whitened_strains = {

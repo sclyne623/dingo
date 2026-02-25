@@ -485,11 +485,16 @@ def train_epoch(pm, dataloader, print_freq: int = 1):
         print_freq=print_freq,
     )
 
+    def _to_device_if_needed(x):
+        if isinstance(x, torch.Tensor) and x.device == pm.device:
+            return x
+        return x.to(pm.device, non_blocking=True)
+
     for batch_idx, data in enumerate(dataloader):
         loss_info.update_timer()
         pm.optimizer.zero_grad()
         # data to device
-        data = [d.to(pm.device, non_blocking=True) for d in data]
+        data = [_to_device_if_needed(d) for d in data]
         # compute loss
         loss = pm.loss(data[0], *data[1:])
         # backward pass and optimizer step
@@ -513,10 +518,15 @@ def test_epoch(pm, dataloader, print_freq: int = 1):
             print_freq=print_freq,
         )
 
+        def _to_device_if_needed(x):
+            if isinstance(x, torch.Tensor) and x.device == pm.device:
+                return x
+            return x.to(pm.device, non_blocking=True)
+
         for batch_idx, data in enumerate(dataloader):
             loss_info.update_timer()
             # data to device
-            data = [d.to(pm.device, non_blocking=True) for d in data]
+            data = [_to_device_if_needed(d) for d in data]
             # compute loss
             loss = pm.loss(data[0], *data[1:])
             # update loss for history and logging
