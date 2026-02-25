@@ -23,6 +23,7 @@ from dingo.gw.training.train_builders import (
     set_train_transforms,
     build_svd_for_embedding_network,
 )
+from dingo.gw.SVD import SVDBasis
 from dingo.core.utils.trainutils import RuntimeLimits
 from dingo.core.utils import (
     set_requires_grad_flag,
@@ -32,6 +33,53 @@ from dingo.core.utils import (
 from dingo.core.utils.trainutils import EarlyStopping
 from dingo.gw.dataset import WaveformDataset
 from dingo.core.posterior_models import BasePosteriorModel
+
+
+def _resolve_svd_file_path(path: str, train_dir: str) -> str:
+    if os.path.isabs(path):
+        return path
+    return os.path.join(train_dir, path)
+
+
+def _load_precomputed_v_rb_list(
+    precomputed_files,
+    detectors,
+    domain_min_idx: int,
+    train_dir: str,
+):
+    if isinstance(precomputed_files, dict):
+        file_list = []
+        for ifo in detectors:
+            if ifo not in precomputed_files:
+                raise KeyError(
+                    f"Missing precomputed SVD file for detector '{ifo}'. "
+                    f"Provided keys: {list(precomputed_files.keys())}"
+                )
+            file_list.append(precomputed_files[ifo])
+    elif isinstance(precomputed_files, (list, tuple)):
+        if len(precomputed_files) != len(detectors):
+            raise ValueError(
+                f"Expected {len(detectors)} precomputed SVD files, got "
+                f"{len(precomputed_files)}."
+            )
+        file_list = list(precomputed_files)
+    else:
+        raise TypeError(
+            "precomputed_files must be either a dict keyed by detector name "
+            "or a list aligned with data.detectors."
+        )
+
+    v_rb_list = []
+    for ifo, path in zip(detectors, file_list):
+        file_path = _resolve_svd_file_path(path, train_dir)
+        print(f"Loading precomputed SVD for {ifo} from {file_path}")
+        basis = SVDBasis(file_name=file_path)
+        V = basis.V
+        if V is None:
+            raise ValueError(f"No V matrix found in {file_path}")
+        V = V[domain_min_idx:]
+        v_rb_list.append(V)
+    return v_rb_list
 
 
 def copy_files_to_local(
@@ -122,17 +170,28 @@ def prepare_training_new(
     # of embedding networks are added in the future, update this code.
 
     if train_settings["model"].get("embedding_kwargs", None):
-        # First, build the SVD for seeding the embedding network.
-        print("\nBuilding SVD for initialization of embedding network.")
-        initial_weights["V_rb_list"] = build_svd_for_embedding_network(
-            wfd,
-            train_settings["data"],
-            train_settings["training"]["stage_0"]["asd_dataset_path"],
-            num_workers=local_settings["num_workers"],
-            batch_size=train_settings["training"]["stage_0"]["batch_size"],
-            out_dir=train_dir,
-            **train_settings["model"]["embedding_kwargs"]["svd"],
-        )
+        svd_kwargs = deepcopy(train_settings["model"]["embedding_kwargs"]["svd"])
+        precomputed_files = svd_kwargs.pop("precomputed_files", None)
+        if precomputed_files is not None:
+            print("\nUsing precomputed SVD matrices for embedding network.")
+            initial_weights["V_rb_list"] = _load_precomputed_v_rb_list(
+                precomputed_files=precomputed_files,
+                detectors=train_settings["data"]["detectors"],
+                domain_min_idx=wfd.domain.min_idx,
+                train_dir=train_dir,
+            )
+        else:
+            # First, build the SVD for seeding the embedding network.
+            print("\nBuilding SVD for initialization of embedding network.")
+            initial_weights["V_rb_list"] = build_svd_for_embedding_network(
+                wfd,
+                train_settings["data"],
+                train_settings["training"]["stage_0"]["asd_dataset_path"],
+                num_workers=local_settings["num_workers"],
+                batch_size=train_settings["training"]["stage_0"]["batch_size"],
+                out_dir=train_dir,
+                **svd_kwargs,
+            )
 
     # Now set the transforms for training. We need to do this here so that we can (a)
     # get the data dimensions to configure the network, and (b) save the
