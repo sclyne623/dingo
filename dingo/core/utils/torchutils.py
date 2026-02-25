@@ -3,6 +3,7 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 from torch.utils.data import DataLoader
+from torch.utils.data._utils.collate import default_collate
 from typing import Union, Tuple, Iterable
 import bilby
 
@@ -227,6 +228,20 @@ def build_train_and_test_loaders(
         num_workers = 0
     pin_memory = not output_on_cuda
 
+    returns_batched_output = bool(getattr(dataset, "returns_batched_output", False))
+
+    def collate_passthrough_or_default(batch):
+        # If dataset.__getitems__ already returned a fully-batched object
+        # (e.g., [theta_batch, waveform_batch]), keep it as-is.
+        if (
+            returns_batched_output
+            and isinstance(batch, list)
+            and len(batch) > 0
+            and all(isinstance(x, (torch.Tensor, np.ndarray)) for x in batch)
+        ):
+            return batch
+        return default_collate(batch)
+
     train_loader = DataLoader(
         train_dataset,
         batch_size=batch_size,
@@ -234,6 +249,7 @@ def build_train_and_test_loaders(
         pin_memory=pin_memory,
         num_workers=num_workers,
         worker_init_fn=fix_random_seeds,
+        collate_fn=collate_passthrough_or_default if returns_batched_output else None,
     )
     test_loader = DataLoader(
         test_dataset,
@@ -242,6 +258,7 @@ def build_train_and_test_loaders(
         pin_memory=pin_memory,
         num_workers=num_workers,
         worker_init_fn=fix_random_seeds,
+        collate_fn=collate_passthrough_or_default if returns_batched_output else None,
     )
 
     return train_loader, test_loader

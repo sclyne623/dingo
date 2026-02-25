@@ -252,6 +252,9 @@ def set_train_transforms(wfd, data_settings, asd_dataset_path, omit_transforms=N
     # Used by DataLoader builder to disable pin_memory and worker multiprocessing
     # when dataset items are already CUDA tensors.
     wfd.output_on_cuda = bool(use_gpu_fastpath_for_this_transform)
+    # When transforms already produce full batched tensors, keep them batched and
+    # bypass split/re-collate in WaveformDataset/DataLoader.
+    wfd.returns_batched_output = bool(use_gpu_fastpath_for_this_transform)
 
 
 def build_svd_for_embedding_network(

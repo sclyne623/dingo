@@ -1,4 +1,4 @@
-from typing import Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 import h5py
 import numpy as np
 import torch.utils.data
@@ -79,6 +79,9 @@ class WaveformDataset(DingoDataset, torch.utils.data.Dataset):
         self.decompression_transform = None
         self.file_handle = None
         self.precision = precision
+        # When True, __getitems__ returns batched transformed outputs directly.
+        # This avoids expensive split/re-collate overhead for GPU fast paths.
+        self.returns_batched_output = False
 
         if leave_waveforms_on_disk:
             leave_on_disk_keys = ["polarizations"]
@@ -306,7 +309,25 @@ class WaveformDataset(DingoDataset, torch.utils.data.Dataset):
         Dict[str, Dict[str, Union[float, np.ndarray]]]
             Nested dictionary containing parameters and waveform polarizations.
         """
-        return self.__getitems__([idx])[0]
+        data = self.__getitems__([idx])
+        if self.returns_batched_output:
+            return self._extract_batch_item(data, 0)
+        return data[0]
+
+    @staticmethod
+    def _extract_batch_item(v: Any, j: int):
+        if isinstance(v, dict):
+            return {k: WaveformDataset._extract_batch_item(vv, j) for k, vv in v.items()}
+        if isinstance(v, list):
+            return [WaveformDataset._extract_batch_item(vv, j) for vv in v]
+        if isinstance(v, tuple):
+            return tuple(WaveformDataset._extract_batch_item(vv, j) for vv in v)
+        if np.isscalar(v):
+            return v
+        try:
+            return v[j]
+        except Exception:
+            return v
 
     def __getitems__(
         self, batched_idx: list[int]
@@ -459,24 +480,18 @@ class WaveformDataset(DingoDataset, torch.utils.data.Dataset):
         # Repackage data into a list of length batch_size, each item having the same
         # structure as before.
 
-        if isinstance(data, dict): #Two versions need to be blended better
-            def _extract_batch_item(v, j):
-                if isinstance(v, dict):
-                    return {k: _extract_batch_item(vv, j) for k, vv in v.items()}
-                if np.isscalar(v):
-                    return v
-                try:
-                    return v[j]
-                except Exception:
-                    return v
+        if self.returns_batched_output:
+            return data
 
+        if isinstance(data, dict): #Two versions need to be blended better
             data = [
-                {k1: _extract_batch_item(v1, j) for k1, v1 in data.items()}
+                {k1: self._extract_batch_item(v1, j) for k1, v1 in data.items()}
                 for j in range(len(batched_idx))
             ]
         elif isinstance(data, list):
             data = [
-                [data[i][j] for i in range(len(data))] for j in range(len(batched_idx))
+                [self._extract_batch_item(data[i], j) for i in range(len(data))]
+                for j in range(len(batched_idx))
             ]
         else:
             raise NotImplementedError()
