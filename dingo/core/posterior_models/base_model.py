@@ -7,6 +7,7 @@ from abc import abstractmethod, ABC
 import os
 from os.path import join
 import h5py
+from concurrent.futures import ThreadPoolExecutor
 
 import torch
 import dingo.core.utils as utils
@@ -485,12 +486,42 @@ def train_epoch(pm, dataloader, print_freq: int = 1):
         print_freq=print_freq,
     )
 
+    def _dataset_outputs_cuda(loader):
+        ds = loader.dataset
+        # random_split returns Subset objects
+        while hasattr(ds, "dataset"):
+            ds = ds.dataset
+        return bool(getattr(ds, "output_on_cuda", False))
+
+    def _iter_with_background_prefetch(loader):
+        iterator = iter(loader)
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(next, iterator)
+            while True:
+                try:
+                    batch = future.result()
+                except StopIteration:
+                    break
+                future = executor.submit(next, iterator)
+                yield batch
+
     def _to_device_if_needed(x):
         if isinstance(x, torch.Tensor) and x.device == pm.device:
             return x
         return x.to(pm.device, non_blocking=True)
 
-    for batch_idx, data in enumerate(dataloader):
+    use_cuda_batch_prefetch = (
+        bool(getattr(pm, "cuda_batch_prefetch", False))
+        and pm.device.type == "cuda"
+        and _dataset_outputs_cuda(dataloader)
+    )
+    data_iter = (
+        _iter_with_background_prefetch(dataloader)
+        if use_cuda_batch_prefetch
+        else dataloader
+    )
+
+    for batch_idx, data in enumerate(data_iter):
         loss_info.update_timer()
         pm.optimizer.zero_grad()
         # data to device
@@ -518,12 +549,41 @@ def test_epoch(pm, dataloader, print_freq: int = 1):
             print_freq=print_freq,
         )
 
+        def _dataset_outputs_cuda(loader):
+            ds = loader.dataset
+            while hasattr(ds, "dataset"):
+                ds = ds.dataset
+            return bool(getattr(ds, "output_on_cuda", False))
+
+        def _iter_with_background_prefetch(loader):
+            iterator = iter(loader)
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(next, iterator)
+                while True:
+                    try:
+                        batch = future.result()
+                    except StopIteration:
+                        break
+                    future = executor.submit(next, iterator)
+                    yield batch
+
         def _to_device_if_needed(x):
             if isinstance(x, torch.Tensor) and x.device == pm.device:
                 return x
             return x.to(pm.device, non_blocking=True)
 
-        for batch_idx, data in enumerate(dataloader):
+        use_cuda_batch_prefetch = (
+            bool(getattr(pm, "cuda_batch_prefetch", False))
+            and pm.device.type == "cuda"
+            and _dataset_outputs_cuda(dataloader)
+        )
+        data_iter = (
+            _iter_with_background_prefetch(dataloader)
+            if use_cuda_batch_prefetch
+            else dataloader
+        )
+
+        for batch_idx, data in enumerate(data_iter):
             loss_info.update_timer()
             # data to device
             data = [_to_device_if_needed(d) for d in data]

@@ -163,6 +163,9 @@ def prepare_training_new(
         initial_weights=initial_weights,
         device=local_settings["device"],
     )
+    pm.cuda_batch_prefetch = bool(local_settings.get("cuda_batch_prefetch", False))
+    if pm.cuda_batch_prefetch:
+        print("Enabled CUDA batch prefetch (background DataLoader iterator).")
 
     if local_settings.get("wandb", False):
         try:
@@ -204,6 +207,9 @@ def prepare_training_resume(
     pm = build_model_from_kwargs(
         filename=checkpoint_name, device=local_settings["device"]
     )
+    pm.cuda_batch_prefetch = bool(local_settings.get("cuda_batch_prefetch", False))
+    if pm.cuda_batch_prefetch:
+        print("Enabled CUDA batch prefetch (background DataLoader iterator).")
     data_settings = deepcopy(pm.metadata["train_settings"]["data"])
     # Optionally copy files to local and update path
     data_settings["waveform_dataset_path"] = copy_files_to_local(
