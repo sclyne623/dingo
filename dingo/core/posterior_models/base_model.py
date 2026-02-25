@@ -506,9 +506,13 @@ def train_epoch(pm, dataloader, print_freq: int = 1):
                 yield batch
 
     def _to_device_if_needed(x):
-        if isinstance(x, torch.Tensor) and x.device == pm.device:
-            return x
-        return x.to(pm.device, non_blocking=True)
+        if isinstance(x, torch.Tensor):
+            if x.device == pm.device:
+                return x
+            return x.to(pm.device, non_blocking=True)
+        if isinstance(x, np.ndarray):
+            return torch.from_numpy(x).to(pm.device, non_blocking=True)
+        return torch.as_tensor(x, device=pm.device)
 
     use_cuda_batch_prefetch = (
         bool(getattr(pm, "cuda_batch_prefetch", False))
@@ -568,9 +572,13 @@ def test_epoch(pm, dataloader, print_freq: int = 1):
                     yield batch
 
         def _to_device_if_needed(x):
-            if isinstance(x, torch.Tensor) and x.device == pm.device:
-                return x
-            return x.to(pm.device, non_blocking=True)
+            if isinstance(x, torch.Tensor):
+                if x.device == pm.device:
+                    return x
+                return x.to(pm.device, non_blocking=True)
+            if isinstance(x, np.ndarray):
+                return torch.from_numpy(x).to(pm.device, non_blocking=True)
+            return torch.as_tensor(x, device=pm.device)
 
         use_cuda_batch_prefetch = (
             bool(getattr(pm, "cuda_batch_prefetch", False))
