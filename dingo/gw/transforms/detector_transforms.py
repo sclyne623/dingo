@@ -276,22 +276,18 @@ class GenerateBBHxDirectResponse(object):
 
     def __call__(self, input_sample):
         sample = input_sample.copy()
+        parameters = sample["parameters"].copy()
+        extrinsic_parameters = sample["extrinsic_parameters"].copy()
+
+        # Build full parameter dict for BBHx generation. Extrinsic values should
+        # override reference intrinsic placeholders.
+        full_parameters = {**parameters, **extrinsic_parameters}
+        wf = self.waveform_generator.generate_amp_phase(
+            full_parameters, catch_waveform_errors=False
+        )
         if self.gpu_fastpath:
-            parameters = sample["parameters"]
-            extrinsic_parameters = sample["extrinsic_parameters"]
-            waveform_payload = self.waveform_generator.generate_direct_response_fused(
-                parameters, extrinsic_parameters, catch_waveform_errors=False
-            )
-            h = self._to_torch_waveform(waveform_payload)
+            h = self._to_torch_waveform(wf["waveform"])
         else:
-            parameters = sample["parameters"].copy()
-            extrinsic_parameters = sample["extrinsic_parameters"].copy()
-            # Build full parameter dict for BBHx generation. Extrinsic values should
-            # override reference intrinsic placeholders.
-            full_parameters = {**parameters, **extrinsic_parameters}
-            wf = self.waveform_generator.generate_amp_phase(
-                full_parameters, catch_waveform_errors=False
-            )
             h = self._normalize_waveform_shape(wf["waveform"])
 
         chan1 = h[:, 0, :]
@@ -306,56 +302,55 @@ class GenerateBBHxDirectResponse(object):
         if "chan3" in self.channels:
             strains["chan3"] = chan3
 
-        if not self.gpu_fastpath:
-            # Keep parameter bookkeeping consistent with downstream transforms.
-            dist = self._get_first(
-                extrinsic_parameters,
-                ["dist", "luminosity_distance"],
-                self._get_first(parameters, ["dist", "luminosity_distance"]),
-            )
-            inc = self._get_first(
-                extrinsic_parameters,
-                ["inc", "theta_jn"],
-                self._get_first(parameters, ["inc", "theta_jn"]),
-            )
-            lambd = self._get_first(
-                extrinsic_parameters,
-                ["lambda", "ra"],
-                self._get_first(parameters, ["lambda", "ra"]),
-            )
-            beta = self._get_first(
-                extrinsic_parameters,
-                ["beta", "dec"],
-                self._get_first(parameters, ["beta", "dec"]),
-            )
-            psi = self._get_first(
-                extrinsic_parameters,
-                ["psi"],
-                self._get_first(parameters, ["psi"]),
-            )
-            geocent_time = self._get_first(
-                extrinsic_parameters,
-                ["geocent_time", "t_ref"],
-                self._get_first(parameters, ["geocent_time", "t_ref"]),
-            )
-            phase = self._get_first(
-                extrinsic_parameters,
-                ["phase", "phi"],
-                self._get_first(parameters, ["phase", "phi"], 0.0),
-            )
+        # Keep parameter bookkeeping consistent with downstream transforms.
+        dist = self._get_first(
+            extrinsic_parameters,
+            ["dist", "luminosity_distance"],
+            self._get_first(parameters, ["dist", "luminosity_distance"]),
+        )
+        inc = self._get_first(
+            extrinsic_parameters,
+            ["inc", "theta_jn"],
+            self._get_first(parameters, ["inc", "theta_jn"]),
+        )
+        lambd = self._get_first(
+            extrinsic_parameters,
+            ["lambda", "ra"],
+            self._get_first(parameters, ["lambda", "ra"]),
+        )
+        beta = self._get_first(
+            extrinsic_parameters,
+            ["beta", "dec"],
+            self._get_first(parameters, ["beta", "dec"]),
+        )
+        psi = self._get_first(
+            extrinsic_parameters,
+            ["psi"],
+            self._get_first(parameters, ["psi"]),
+        )
+        geocent_time = self._get_first(
+            extrinsic_parameters,
+            ["geocent_time", "t_ref"],
+            self._get_first(parameters, ["geocent_time", "t_ref"]),
+        )
+        phase = self._get_first(
+            extrinsic_parameters,
+            ["phase", "phi"],
+            self._get_first(parameters, ["phase", "phi"], 0.0),
+        )
 
-            parameters["dist"] = dist
-            parameters["luminosity_distance"] = dist
-            parameters["inc"] = inc
-            parameters["theta_jn"] = inc
-            parameters["lambda"] = lambd
-            parameters["ra"] = lambd
-            parameters["beta"] = beta
-            parameters["dec"] = beta
-            parameters["psi"] = psi
-            parameters["geocent_time"] = geocent_time
-            parameters["phase"] = phase
-            parameters["phi"] = phase
+        parameters["dist"] = dist
+        parameters["luminosity_distance"] = dist
+        parameters["inc"] = inc
+        parameters["theta_jn"] = inc
+        parameters["lambda"] = lambd
+        parameters["ra"] = lambd
+        parameters["beta"] = beta
+        parameters["dec"] = beta
+        parameters["psi"] = psi
+        parameters["geocent_time"] = geocent_time
+        parameters["phase"] = phase
+        parameters["phi"] = phase
 
         sample["waveform"] = strains
         sample["parameters"] = parameters

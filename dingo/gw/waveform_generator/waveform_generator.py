@@ -8,7 +8,6 @@ from typing import Dict, List, Tuple, Union, Callable
 from numbers import Number
 import warnings
 import pandas as pd
-import torch
 
 import lal
 import lalsimulation as LS
@@ -2151,107 +2150,6 @@ class BBHxWaveformGenerator:
             "t_ref": self._broadcast_to_length(t_ref, n, "t_ref"),
         }
 
-    @staticmethod
-    def _value_from_dicts(extrinsic_parameters, intrinsic_parameters, keys, default=None):
-        for key in keys:
-            if key in extrinsic_parameters:
-                return extrinsic_parameters[key]
-            if key in intrinsic_parameters:
-                return intrinsic_parameters[key]
-        return default
-
-    @staticmethod
-    def _as_numpy_float64(x):
-        if isinstance(x, torch.Tensor):
-            x = x.detach().cpu().numpy()
-        return np.asarray(x, dtype=np.float64)
-
-    def _parse_parameters_fused(
-        self,
-        intrinsic_parameters: Dict[str, float],
-        extrinsic_parameters: Dict[str, float],
-    ) -> Dict[str, np.ndarray]:
-        m1 = self._value_from_dicts(extrinsic_parameters, intrinsic_parameters, ["mass_1", "m1"])
-        m2 = self._value_from_dicts(extrinsic_parameters, intrinsic_parameters, ["mass_2", "m2"])
-
-        if m1 is None or m2 is None:
-            chirp_mass = self._value_from_dicts(
-                extrinsic_parameters, intrinsic_parameters, ["chirp_mass", "Mchirp"]
-            )
-            q = self._value_from_dicts(
-                extrinsic_parameters, intrinsic_parameters, ["mass_ratio", "q"]
-            )
-            if chirp_mass is None or q is None:
-                raise ValueError(
-                    "BBHxWaveformGenerator requires either (mass_1, mass_2) or "
-                    "(chirp_mass/Mchirp, mass_ratio/q)."
-                )
-            chirp_mass_arr = self._as_numpy_float64(chirp_mass)
-            q_arr = self._as_numpy_float64(q)
-            m1, m2 = self._masses_from_chirp_mass_and_q(chirp_mass_arr, q_arr)
-
-        chi1z = self._value_from_dicts(
-            extrinsic_parameters, intrinsic_parameters, ["chi_1z", "chi1z", "chi_1", "chi1"], 0.0
-        )
-        chi2z = self._value_from_dicts(
-            extrinsic_parameters, intrinsic_parameters, ["chi_2z", "chi2z", "chi_2", "chi2"], 0.0
-        )
-
-        distance_mpc = self._value_from_dicts(
-            extrinsic_parameters,
-            intrinsic_parameters,
-            ["luminosity_distance", "dist", "redshift_distance"],
-            None,
-        )
-        if distance_mpc is None:
-            raise ValueError(
-                "BBHxWaveformGenerator requires luminosity_distance/dist (Mpc)."
-            )
-
-        inc = self._value_from_dicts(extrinsic_parameters, intrinsic_parameters, ["theta_jn", "inc"], 0.0)
-        phase = self._value_from_dicts(extrinsic_parameters, intrinsic_parameters, ["phase", "phi"], 0.0)
-        lam = self._value_from_dicts(extrinsic_parameters, intrinsic_parameters, ["ra", "lambda", "lambd"], 0.0)
-        beta = self._value_from_dicts(extrinsic_parameters, intrinsic_parameters, ["dec", "beta"], 0.0)
-        psi = self._value_from_dicts(extrinsic_parameters, intrinsic_parameters, ["psi"], 0.0)
-
-        if "t_ref" in extrinsic_parameters:
-            t_ref = extrinsic_parameters["t_ref"]
-        elif "t_ref" in intrinsic_parameters:
-            t_ref = intrinsic_parameters["t_ref"]
-        elif "t_ref_years" in extrinsic_parameters:
-            t_ref = self._as_numpy_float64(extrinsic_parameters["t_ref_years"]) * YRSID_SI
-        elif "t_ref_years" in intrinsic_parameters:
-            t_ref = self._as_numpy_float64(intrinsic_parameters["t_ref_years"]) * YRSID_SI
-        elif "geocent_time" in extrinsic_parameters:
-            t_ref = extrinsic_parameters["geocent_time"]
-        elif "geocent_time" in intrinsic_parameters:
-            t_ref = intrinsic_parameters["geocent_time"]
-        else:
-            t_ref = 0.5 * YRSID_SI
-
-        m1_arr = self._as_numpy_float64(m1)
-        n = m1_arr.size if m1_arr.ndim > 0 else 1
-        t_ref_arr = self._as_numpy_float64(t_ref)
-        if t_ref_arr.ndim == 0:
-            if np.isclose(float(t_ref_arr), 0.0, atol=1e-3):
-                t_ref_arr = np.asarray(0.5 * YRSID_SI, dtype=np.float64)
-        else:
-            t_ref_arr = np.where(np.isclose(t_ref_arr, 0.0, atol=1e-3), 0.5 * YRSID_SI, t_ref_arr)
-
-        return {
-            "m1": self._broadcast_to_length(m1, n, "m1"),
-            "m2": self._broadcast_to_length(m2, n, "m2"),
-            "chi1z": self._broadcast_to_length(chi1z, n, "chi1z"),
-            "chi2z": self._broadcast_to_length(chi2z, n, "chi2z"),
-            "distance_mpc": self._broadcast_to_length(distance_mpc, n, "distance_mpc"),
-            "inc": self._broadcast_to_length(inc, n, "inc"),
-            "phase": self._broadcast_to_length(phase, n, "phase"),
-            "lam": self._broadcast_to_length(lam, n, "lam"),
-            "beta": self._broadcast_to_length(beta, n, "beta"),
-            "psi": self._broadcast_to_length(psi, n, "psi"),
-            "t_ref": self._broadcast_to_length(t_ref_arr, n, "t_ref"),
-        }
-
     def _build_bbhx_frequency_grid(self) -> np.ndarray:
         """Build a sparse log-spaced frequency grid for BBHx interpolation.
 
@@ -2391,60 +2289,6 @@ class BBHxWaveformGenerator:
                 }
             else:
                 raise
-
-    def generate_direct_response_fused(
-        self,
-        intrinsic_parameters: Dict[str, float],
-        extrinsic_parameters: Dict[str, float],
-        catch_waveform_errors=False,
-    ):
-        """
-        Faster path for direct-response training:
-        parse from separate intrinsic/extrinsic dicts and return waveform payload only.
-        """
-        freqs = self._get_cached_backend_frequency_grid()
-        try:
-            parsed = self._parse_parameters_fused(intrinsic_parameters, extrinsic_parameters)
-            m1 = parsed["m1"]
-            m2 = parsed["m2"]
-            chi1z = parsed["chi1z"]
-            chi2z = parsed["chi2z"]
-            distance_si = parsed["distance_mpc"] * PC_SI * 1e6
-            inc = parsed["inc"]
-            phase = parsed["phase"]
-            lam = parsed["lam"]
-            beta = parsed["beta"]
-            psi = parsed["psi"]
-            t_ref = parsed["t_ref"]
-
-            waveform_data = self.waveform_gen(
-                m1,
-                m2,
-                chi1z,
-                chi2z,
-                distance_si,
-                phase,
-                self.f_ref,
-                inc,
-                lam,
-                beta,
-                psi,
-                t_ref,
-                freqs=freqs,
-                modes=self.mode_list,
-                direct=False,
-                fill=True,
-                squeeze=True,
-                length=self.bbhx_length,
-            )
-            if self.gpu_fastpath and self.use_gpu:
-                return waveform_data
-            return self._to_numpy(waveform_data)
-        except Exception:
-            if not catch_waveform_errors:
-                raise
-            nan_shape = (3, len(freqs))
-            return np.full(nan_shape, np.nan, dtype=np.complex128)
 
     def generate_amp_phase_m(
         self, parameters: Dict[str, float]
