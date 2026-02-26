@@ -197,8 +197,14 @@ def _run_training_ddp_worker(
             )
 
         pm.network = replace_BatchNorm_with_SyncBatchNorm(pm.network)
+        find_unused_parameters = bool(
+            local_settings.get("distributed", {}).get("find_unused_parameters", True)
+        )
         pm.network = torch.nn.parallel.DistributedDataParallel(
-            pm.network, device_ids=[rank], output_device=rank
+            pm.network,
+            device_ids=[rank],
+            output_device=rank,
+            find_unused_parameters=find_unused_parameters,
         )
 
         with threadpool_limits(limits=1, user_api="blas"):

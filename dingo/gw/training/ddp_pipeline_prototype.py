@@ -87,7 +87,15 @@ def main():
             )
 
         pm, wfd = prepare_training_new(train_settings, args.train_dir, local_settings)
-        pm.network = DDP(pm.network, device_ids=[local_rank], output_device=local_rank)
+        find_unused_parameters = bool(
+            local_settings.get("distributed", {}).get("find_unused_parameters", True)
+        )
+        pm.network = DDP(
+            pm.network,
+            device_ids=[local_rank],
+            output_device=local_rank,
+            find_unused_parameters=find_unused_parameters,
+        )
 
         stage0 = train_settings["training"]["stage_0"]
         train_loader, _, _ = initialize_stage(
@@ -182,4 +190,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
