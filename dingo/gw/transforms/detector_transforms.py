@@ -274,6 +274,17 @@ class GenerateBBHxDirectResponse(object):
             t = t.to(self.device, non_blocking=True)
         return self._normalize_waveform_shape(t)
 
+    def _to_torch_parameters(self, d):
+        out = {}
+        for k, v in d.items():
+            if isinstance(v, torch.Tensor):
+                out[k] = v.to(self.device, non_blocking=True)
+            elif np.isscalar(v):
+                out[k] = torch.as_tensor(v, device=self.device, dtype=torch.float32)
+            else:
+                out[k] = torch.as_tensor(v, device=self.device)
+        return out
+
     def __call__(self, input_sample):
         sample = input_sample.copy()
         parameters = sample["parameters"].copy()
@@ -351,6 +362,10 @@ class GenerateBBHxDirectResponse(object):
         parameters["geocent_time"] = geocent_time
         parameters["phase"] = phase
         parameters["phi"] = phase
+
+        if self.gpu_fastpath:
+            parameters = self._to_torch_parameters(parameters)
+            extrinsic_parameters = self._to_torch_parameters(extrinsic_parameters)
 
         sample["waveform"] = strains
         sample["parameters"] = parameters
