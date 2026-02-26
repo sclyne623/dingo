@@ -11,6 +11,7 @@ import shutil
 import textwrap
 import time
 from copy import deepcopy
+import torch
 
 from threadpoolctl import threadpool_limits
 
@@ -91,6 +92,56 @@ def _load_precomputed_v_rb_list(
     return v_rb_list, common_size
 
 
+def _parse_two_gpu_settings(local_settings: dict):
+    enabled = bool(local_settings.get("two_gpu_split", False))
+    gen_device = torch.device(local_settings.get("generation_device", "cuda:0"))
+    train_device = torch.device(local_settings.get("training_device", "cuda:1"))
+
+    if not enabled:
+        return False, gen_device, train_device
+
+    if not torch.cuda.is_available():
+        raise RuntimeError("two_gpu_split=True requires CUDA, but CUDA is unavailable.")
+    if torch.cuda.device_count() < 2:
+        raise RuntimeError(
+            f"two_gpu_split=True requires >=2 CUDA devices; found {torch.cuda.device_count()}."
+        )
+    if gen_device.type != "cuda" or train_device.type != "cuda":
+        raise ValueError(
+            "two_gpu_split requires CUDA devices. "
+            f"Got generation_device={gen_device}, training_device={train_device}."
+        )
+    if gen_device.index == train_device.index:
+        raise ValueError(
+            "two_gpu_split requires distinct generation/training GPUs. "
+            f"Both are set to {gen_device}."
+        )
+    return True, gen_device, train_device
+
+
+def _configure_two_gpu_split_for_pm(pm: BasePosteriorModel, local_settings: dict):
+    enabled, gen_device, train_device = _parse_two_gpu_settings(local_settings)
+    pm.two_gpu_split = bool(enabled)
+
+    if not enabled:
+        pm.generation_device = None
+        pm.training_device = None
+        return
+
+    # Keep data generation/transforms on generation GPU.
+    torch.cuda.set_device(gen_device)
+    pm.generation_device = gen_device
+    pm.training_device = train_device
+
+    # Put training network on training GPU.
+    pm.network.to(train_device)
+    pm.device = train_device
+    print(
+        "Enabled two-GPU split training: "
+        f"generation on {pm.generation_device}, training on {pm.training_device}."
+    )
+
+
 def copy_files_to_local(
     file_path: str, local_dir: Optional[str], leave_keys_on_disk: bool, is_condor: bool = False,
 ) -> str:
@@ -161,6 +212,10 @@ def prepare_training_new(
     (BasePosteriorModel, WaveformDataset)
     """
     data_settings = deepcopy(train_settings["data"])
+    two_gpu_enabled, gen_device, _ = _parse_two_gpu_settings(local_settings)
+    if two_gpu_enabled:
+        # Keep waveform generation/transforms on generation GPU.
+        torch.cuda.set_device(gen_device)
     # Optionally copy files to local and update path
     data_settings["waveform_dataset_path"] = copy_files_to_local(
         file_path=data_settings["waveform_dataset_path"],
@@ -238,6 +293,7 @@ def prepare_training_new(
         initial_weights=initial_weights,
         device=local_settings["device"],
     )
+    _configure_two_gpu_split_for_pm(pm, local_settings)
     pm.cuda_batch_prefetch = bool(local_settings.get("cuda_batch_prefetch", False))
     if pm.cuda_batch_prefetch:
         print("Enabled CUDA batch prefetch (background DataLoader iterator).")
@@ -279,9 +335,14 @@ def prepare_training_resume(
     (BasePosteriorModel, WaveformDataset)
     """
 
+    two_gpu_enabled, gen_device, _ = _parse_two_gpu_settings(local_settings)
+    if two_gpu_enabled:
+        torch.cuda.set_device(gen_device)
+
     pm = build_model_from_kwargs(
         filename=checkpoint_name, device=local_settings["device"]
     )
+    _configure_two_gpu_split_for_pm(pm, local_settings)
     pm.cuda_batch_prefetch = bool(local_settings.get("cuda_batch_prefetch", False))
     if pm.cuda_batch_prefetch:
         print("Enabled CUDA batch prefetch (background DataLoader iterator).")
@@ -346,6 +407,10 @@ def initialize_stage(
     """
 
     train_settings = pm.metadata["train_settings"]
+
+    # Ensure transform/data pipeline remains on generation GPU in split mode.
+    if bool(getattr(pm, "two_gpu_split", False)):
+        torch.cuda.set_device(pm.generation_device)
 
     # Rebuild transforms based on possibly different noise.
     set_train_transforms(wfd, train_settings["data"], stage["asd_dataset_path"])
