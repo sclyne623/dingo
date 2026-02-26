@@ -10,7 +10,9 @@ import h5py
 from concurrent.futures import ThreadPoolExecutor
 
 import torch
+import torch.distributed as dist
 import dingo.core.utils as utils
+from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import Dataset
 import time
 import numpy as np
@@ -60,6 +62,7 @@ class BasePosteriorModel(ABC):
         self.version = f"dingo={get_version()}"  # dingo version
 
         self.device = None
+        self.rank = None
         self.optimizer_kwargs = None
         self.network_kwargs = None
         self.scheduler_kwargs = None
@@ -189,8 +192,10 @@ class BasePosteriorModel(ABC):
         """
         Put model to device, and set self.device accordingly.
         """
-        if device not in ("cpu", "cuda"):
-            raise ValueError(f"Device should be either cpu or cuda, got {device}.")
+        if "cpu" not in device and "cuda" not in device:
+            raise ValueError(f"Device should contain cpu or cuda, got {device}.")
+        if ":" in device and "cuda" in device:
+            self.rank = int(device.split(":")[1])
         self.device = torch.device(device)
         # Commented below so that code runs on first cuda device in the case of multiple.
         # if device == 'cuda' and torch.cuda.device_count() > 1:
@@ -234,7 +239,11 @@ class BasePosteriorModel(ABC):
         """
         model_dict = {
             "model_kwargs": self.model_kwargs,
-            "model_state_dict": self.network.state_dict(),
+            "model_state_dict": (
+                self.network.module.state_dict()
+                if isinstance(self.network, DDP)
+                else self.network.state_dict()
+            ),
             "epoch": self.epoch,
             "version": self.version,
         }
@@ -366,6 +375,7 @@ class BasePosteriorModel(ABC):
         train_loader: torch.utils.data.DataLoader,
         test_loader: torch.utils.data.DataLoader,
         train_dir: str,
+        train_sampler: Optional[torch.utils.data.DistributedSampler] = None,
         runtime_limits: object = None,
         checkpoint_epochs: int = None,
         use_wandb=False,
@@ -394,52 +404,79 @@ class BasePosteriorModel(ABC):
 
         """
 
+        is_primary = self.rank is None or self.rank == 0
+        world_size = dist.get_world_size() if dist.is_available() and dist.is_initialized() else 1
+
         if test_only:
             test_loss = test_epoch(
                 self, test_loader, print_freq=max(1, int(test_print_freq))
             )
-            print(f"test loss: {test_loss:.3f}")
+            if dist.is_available() and dist.is_initialized():
+                t = torch.tensor(test_loss, device=self.device, dtype=torch.float64)
+                dist.all_reduce(t, op=dist.ReduceOp.SUM)
+                test_loss = (t / world_size).item()
+            if is_primary:
+                print(f"test loss: {test_loss:.3f}")
 
         else:
             while not runtime_limits.limits_exceeded(self.epoch):
                 self.epoch += 1
+                if train_sampler is not None:
+                    train_sampler.set_epoch(self.epoch)
 
                 # Training
                 lr = utils.get_lr(self.optimizer)
-                print(f"\nStart training epoch {self.epoch} with lr {lr}")
+                if is_primary:
+                    print(f"\nStart training epoch {self.epoch} with lr {lr}")
                 time_start = time.time()
                 train_loss = train_epoch(
-                    self, train_loader, print_freq=max(1, int(train_print_freq))
+                    self,
+                    train_loader,
+                    print_freq=max(1, int(train_print_freq)) if is_primary else 0,
                 )
+                if dist.is_available() and dist.is_initialized():
+                    t = torch.tensor(train_loss, device=self.device, dtype=torch.float64)
+                    dist.all_reduce(t, op=dist.ReduceOp.SUM)
+                    train_loss = (t / world_size).item()
                 train_time = time.time() - time_start
 
-                print(
-                    "Done. This took {:2.0f}:{:2.0f} min.".format(
-                        *divmod(train_time, 60)
+                if is_primary:
+                    print(
+                        "Done. This took {:2.0f}:{:2.0f} min.".format(
+                            *divmod(train_time, 60)
+                        )
                     )
-                )
 
                 # Testing
-                print(f"Start testing epoch {self.epoch}")
+                if is_primary:
+                    print(f"Start testing epoch {self.epoch}")
                 time_start = time.time()
                 test_loss = test_epoch(
-                    self, test_loader, print_freq=max(1, int(test_print_freq))
+                    self,
+                    test_loader,
+                    print_freq=max(1, int(test_print_freq)) if is_primary else 0,
                 )
+                if dist.is_available() and dist.is_initialized():
+                    t = torch.tensor(test_loss, device=self.device, dtype=torch.float64)
+                    dist.all_reduce(t, op=dist.ReduceOp.SUM)
+                    test_loss = (t / world_size).item()
                 test_time = time.time() - time_start
 
-                print(
-                    "Done. This took {:2.0f}:{:2.0f} min.".format(
-                        *divmod(time.time() - time_start, 60)
+                if is_primary:
+                    print(
+                        "Done. This took {:2.0f}:{:2.0f} min.".format(
+                            *divmod(time.time() - time_start, 60)
+                        )
                     )
-                )
 
                 # scheduler step for learning rate
                 utils.perform_scheduler_step(self.scheduler, test_loss)
 
                 # write history and save model
-                utils.write_history(train_dir, self.epoch, train_loss, test_loss, lr)
-                utils.save_model(self, train_dir, checkpoint_epochs=checkpoint_epochs)
-                if use_wandb:
+                if is_primary:
+                    utils.write_history(train_dir, self.epoch, train_loss, test_loss, lr)
+                    utils.save_model(self, train_dir, checkpoint_epochs=checkpoint_epochs)
+                if use_wandb and is_primary:
                     try:
                         import wandb
 
@@ -460,20 +497,31 @@ class BasePosteriorModel(ABC):
 
                 if early_stopping is not None:
                     # Whether to use train or test loss
-                    early_stopping_loss = (
-                        test_loss
-                        if early_stopping.metric == "validation"
-                        else train_loss
-                    )
-                    is_best_model = early_stopping(early_stopping_loss)
-                    if is_best_model:
-                        self.save_model(
-                            join(train_dir, "best_model.pt"), save_training_info=False
+                    stop_now = False
+                    if is_primary:
+                        early_stopping_loss = (
+                            test_loss
+                            if early_stopping.metric == "validation"
+                            else train_loss
                         )
-                    if early_stopping.early_stop:
-                        print("Early stopping")
+                        is_best_model = early_stopping(early_stopping_loss)
+                        if is_best_model:
+                            self.save_model(
+                                join(train_dir, "best_model.pt"), save_training_info=False
+                            )
+                        stop_now = bool(early_stopping.early_stop)
+                    if dist.is_available() and dist.is_initialized():
+                        t = torch.tensor(
+                            1 if stop_now else 0, device=self.device, dtype=torch.int32
+                        )
+                        dist.broadcast(t, src=0)
+                        stop_now = bool(t.item())
+                    if stop_now:
+                        if is_primary:
+                            print("Early stopping")
                         break
-                print(f"Finished training epoch {self.epoch}.\n")
+                if is_primary:
+                    print(f"Finished training epoch {self.epoch}.\n")
 
 
 def train_epoch(pm, dataloader, print_freq: int = 1):

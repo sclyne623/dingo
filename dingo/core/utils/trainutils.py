@@ -123,6 +123,8 @@ class LossInfo:
         return self.loss_tracker.get_avg()
 
     def print_info(self, batch_idx):
+        if self.print_freq is None or self.print_freq <= 0:
+            return
         if batch_idx % self.print_freq == 0:
             print(
                 "{} Epoch: {} [{}/{} ({:.0f}%)]".format(

@@ -1,10 +1,14 @@
+import os
+from socket import gethostname
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.distributed as dist
 from torch.nn import functional as F
-from torch.utils.data import DataLoader
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.utils.data import DataLoader, DistributedSampler
 from torch.utils.data._utils.collate import default_collate
-from typing import Union, Tuple, Iterable
+from typing import Any, Optional, Union, Tuple, Iterable
 import bilby
 
 
@@ -14,6 +18,82 @@ def fix_random_seeds(_):
     try:
         bilby.core.utils.random.seed(int(torch.initial_seed()) % (2 ** 32 - 1))
     except AttributeError:  # In case using an old version of Bilby.
+        pass
+
+
+def get_cuda_info() -> dict[str, Any]:
+    """Get a small snapshot of visible CUDA resources."""
+    if not torch.cuda.is_available():
+        return {}
+    return {
+        "cuDNN version": torch.backends.cudnn.version(),
+        "CUDA version": torch.version.cuda,
+        "device count": torch.cuda.device_count(),
+        "device name": torch.cuda.get_device_name(0),
+        "memory (GB)": round(
+            torch.cuda.get_device_properties(0).total_memory / 1024**3, 1
+        ),
+    }
+
+
+def document_gpus(target_dir: str) -> None:
+    """Write GPU diagnostics into info_gpus.txt in target_dir."""
+    cuda_info = get_cuda_info()
+    with open(os.path.join(target_dir, "info_gpus.txt"), "w") as f:
+        f.write(f"# Running on host:\n{gethostname()}\n")
+        f.write("# CUDA information:\n")
+        for k, v in cuda_info.items():
+            f.write(f"{k}: {v}\n")
+
+
+def set_seed_based_on_rank(rank: int) -> None:
+    """Offset random seeds by rank so each DDP process gets unique draws."""
+    base_seed = int(torch.initial_seed())
+    torch.manual_seed(base_seed + rank)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(base_seed + rank)
+    np.random.seed((base_seed % (2**32 - 1)) + rank)
+
+
+def setup_ddp(rank: int, world_size: int, port: int = 12355) -> None:
+    """
+    Initialize NCCL process group.
+    If launched via torchrun/srun env, honor existing MASTER_* values.
+    """
+    os.environ.setdefault("MASTER_ADDR", "localhost")
+    os.environ.setdefault("MASTER_PORT", str(port))
+    if not dist.is_nccl_available():
+        raise RuntimeError("NCCL backend unavailable; cannot run DDP on CUDA.")
+    dist.init_process_group(backend="nccl", rank=rank, world_size=world_size)
+    torch.cuda.set_device(rank)
+
+
+def cleanup_ddp() -> None:
+    """Destroy process group if initialized."""
+    if dist.is_available() and dist.is_initialized():
+        dist.destroy_process_group()
+
+
+def replace_BatchNorm_with_SyncBatchNorm(network: nn.Module) -> nn.Module:
+    """Convert BN layers to SyncBatchNorm for multi-GPU DDP."""
+    return nn.SyncBatchNorm.convert_sync_batchnorm(network)
+
+
+def print_number_of_model_parameters(network: nn.Module) -> None:
+    """Print fixed/learnable parameter counts (DDP-aware)."""
+    bare = network.module if isinstance(network, DDP) else network
+    n_grad = get_number_of_model_parameters(network, (True,))
+    n_nograd = get_number_of_model_parameters(network, (False,))
+    print(f"Fixed parameters: {n_nograd}\nLearnable parameters: {n_grad}")
+    try:
+        if bare.name == "FlowWrapper":
+            n_emb = get_number_of_model_parameters(bare.embedding_net, (True,))
+            n_flow = get_number_of_model_parameters(bare.flow, (True,))
+            print(
+                f"   - learnable embedding network parameters: {n_emb} ({n_emb / n_grad * 100:.2f}%)\n"
+                f"   - learnable flow parameters: {n_flow} ({n_flow / n_grad * 100:.2f}%)"
+            )
+    except Exception:
         pass
 
 
@@ -192,6 +272,8 @@ def build_train_and_test_loaders(
     train_fraction: float,
     batch_size: int,
     num_workers: int,
+    world_size: Optional[int] = None,
+    rank: Optional[int] = None,
 ):
     """
     Split the dataset into train and test sets, and build corresponding DataLoaders.
@@ -208,7 +290,7 @@ def build_train_and_test_loaders(
 
     Returns
     -------
-    (train_loader, test_loader)
+    (train_loader, test_loader, train_sampler)
     """
 
     # Split the dataset. This function uses a fixed seed for reproducibility.
@@ -242,26 +324,53 @@ def build_train_and_test_loaders(
             return batch
         return default_collate(batch)
 
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=batch_size,
-        shuffle=True,
-        pin_memory=pin_memory,
-        num_workers=num_workers,
-        worker_init_fn=fix_random_seeds,
-        collate_fn=collate_passthrough_or_default if returns_batched_output else None,
-    )
-    test_loader = DataLoader(
-        test_dataset,
-        batch_size=batch_size,
-        shuffle=False,
-        pin_memory=pin_memory,
-        num_workers=num_workers,
-        worker_init_fn=fix_random_seeds,
-        collate_fn=collate_passthrough_or_default if returns_batched_output else None,
-    )
+    if rank is not None and world_size is not None:
+        train_sampler = DistributedSampler(
+            train_dataset, shuffle=True, num_replicas=world_size, rank=rank
+        )
+        test_sampler = DistributedSampler(
+            test_dataset, shuffle=False, num_replicas=world_size, rank=rank
+        )
+        train_loader = DataLoader(
+            train_dataset,
+            batch_size=batch_size,
+            sampler=train_sampler,
+            pin_memory=pin_memory,
+            num_workers=num_workers,
+            worker_init_fn=fix_random_seeds,
+            collate_fn=collate_passthrough_or_default if returns_batched_output else None,
+        )
+        test_loader = DataLoader(
+            test_dataset,
+            batch_size=batch_size,
+            sampler=test_sampler,
+            pin_memory=pin_memory,
+            num_workers=num_workers,
+            worker_init_fn=fix_random_seeds,
+            collate_fn=collate_passthrough_or_default if returns_batched_output else None,
+        )
+    else:
+        train_sampler = None
+        train_loader = DataLoader(
+            train_dataset,
+            batch_size=batch_size,
+            shuffle=True,
+            pin_memory=pin_memory,
+            num_workers=num_workers,
+            worker_init_fn=fix_random_seeds,
+            collate_fn=collate_passthrough_or_default if returns_batched_output else None,
+        )
+        test_loader = DataLoader(
+            test_dataset,
+            batch_size=batch_size,
+            shuffle=False,
+            pin_memory=pin_memory,
+            num_workers=num_workers,
+            worker_init_fn=fix_random_seeds,
+            collate_fn=collate_passthrough_or_default if returns_batched_output else None,
+        )
 
-    return train_loader, test_loader
+    return train_loader, test_loader, train_sampler
 
 
 def set_requires_grad_flag(

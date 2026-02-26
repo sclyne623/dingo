@@ -1,9 +1,6 @@
 from typing import Optional, Tuple
 import os
 
-from typing import Optional, Tuple
-import os
-
 import numpy as np
 import yaml
 import argparse
@@ -12,6 +9,7 @@ import textwrap
 import time
 from copy import deepcopy
 import torch
+import torch.multiprocessing as mp
 
 from threadpoolctl import threadpool_limits
 
@@ -30,6 +28,12 @@ from dingo.core.utils import (
     set_requires_grad_flag,
     get_number_of_model_parameters,
     build_train_and_test_loaders,
+)
+from dingo.core.utils.torchutils import (
+    cleanup_ddp,
+    replace_BatchNorm_with_SyncBatchNorm,
+    set_seed_based_on_rank,
+    setup_ddp,
 )
 from dingo.core.utils.trainutils import EarlyStopping
 from dingo.gw.dataset import WaveformDataset
@@ -140,6 +144,116 @@ def _configure_two_gpu_split_for_pm(pm: BasePosteriorModel, local_settings: dict
         "Enabled two-GPU split training: "
         f"generation on {pm.generation_device}, training on {pm.training_device}."
     )
+
+
+def get_num_gpus(local_settings: dict) -> int:
+    if "num_gpus" in local_settings:
+        return int(local_settings["num_gpus"])
+    condor_num_gpus = local_settings.get("condor", {}).get("num_gpus")
+    if condor_num_gpus is not None:
+        return int(condor_num_gpus)
+    if torch.cuda.is_available():
+        return int(torch.cuda.device_count())
+    return 1
+
+
+def _ddp_enabled(local_settings: dict) -> bool:
+    backend = (
+        local_settings.get("distributed", {})
+        .get("backend", "")
+        .strip()
+        .lower()
+    )
+    return backend == "ddp"
+
+
+def _run_training_ddp_worker(
+    rank: int,
+    world_size: int,
+    train_settings: Optional[dict],
+    local_settings: dict,
+    train_dir: str,
+    checkpoint_name: Optional[str],
+    results,
+):
+    port = int(local_settings.get("distributed", {}).get("port", 12355))
+    try:
+        setup_ddp(rank, world_size, port=port)
+        set_seed_based_on_rank(rank)
+
+        local_settings_rank = deepcopy(local_settings)
+        local_settings_rank["rank"] = rank
+        local_settings_rank["world_size"] = world_size
+        local_settings_rank["device"] = f"cuda:{rank}"
+        local_settings_rank["two_gpu_split"] = False
+
+        if checkpoint_name is None:
+            pm, wfd = prepare_training_new(
+                deepcopy(train_settings), train_dir, local_settings_rank
+            )
+        else:
+            pm, wfd = prepare_training_resume(
+                checkpoint_name, local_settings_rank, train_dir
+            )
+
+        pm.network = replace_BatchNorm_with_SyncBatchNorm(pm.network)
+        pm.network = torch.nn.parallel.DistributedDataParallel(
+            pm.network, device_ids=[rank], output_device=rank
+        )
+
+        with threadpool_limits(limits=1, user_api="blas"):
+            complete = train_stages(pm, wfd, train_dir, local_settings_rank)
+
+        if rank == 0:
+            results["complete"] = bool(complete)
+            results["error"] = ""
+    except Exception as exc:
+        if rank == 0:
+            results["error"] = str(exc)
+        raise
+    finally:
+        cleanup_ddp()
+
+
+def _run_multi_gpu_training(
+    train_settings: Optional[dict],
+    local_settings: dict,
+    train_dir: str,
+    checkpoint_name: Optional[str],
+) -> bool:
+    if local_settings.get("two_gpu_split", False):
+        raise ValueError("Cannot use local.distributed.backend=ddp with two_gpu_split.")
+    if not torch.cuda.is_available():
+        raise RuntimeError("DDP requested but CUDA is unavailable.")
+
+    world_size = get_num_gpus(local_settings)
+    if world_size < 2:
+        raise RuntimeError(
+            f"DDP requested but num_gpus={world_size}. Set local.num_gpus >= 2."
+        )
+
+    manager = mp.Manager()
+    results = manager.dict()
+    results["complete"] = False
+    results["error"] = ""
+
+    mp.spawn(
+        _run_training_ddp_worker,
+        args=(
+            world_size,
+            train_settings,
+            local_settings,
+            train_dir,
+            checkpoint_name,
+            results,
+        ),
+        nprocs=world_size,
+        join=True,
+    )
+
+    if results.get("error"):
+        raise RuntimeError(f"DDP training failed: {results['error']}")
+    return bool(results.get("complete", False))
 
 
 def copy_files_to_local(
@@ -399,6 +513,8 @@ def initialize_stage(
     wfd: WaveformDataset,
     stage: dict,
     num_workers: int,
+    world_size: Optional[int] = None,
+    rank: Optional[int] = None,
     resume: bool = False,
 ):
     """
@@ -422,30 +538,50 @@ def initialize_stage(
 
     Returns
     -------
-    (train_loader, test_loader)
+    (train_loader, test_loader, train_sampler)
     """
 
     train_settings = pm.metadata["train_settings"]
+    print_output = rank is None or rank == 0
 
     # Ensure transform/data pipeline remains on generation GPU in split mode.
     if bool(getattr(pm, "two_gpu_split", False)):
         torch.cuda.set_device(pm.generation_device)
 
     # Rebuild transforms based on possibly different noise.
-    set_train_transforms(wfd, train_settings["data"], stage["asd_dataset_path"])
+    set_train_transforms(
+        wfd,
+        train_settings["data"],
+        stage["asd_dataset_path"],
+        print_output=print_output,
+    )
+
+    if world_size is not None and world_size > 1:
+        total_batch_size = stage["batch_size"]
+        if total_batch_size % world_size != 0:
+            raise ValueError(
+                f"Total batch size {total_batch_size} is not divisible by "
+                f"world_size={world_size}."
+            )
+        batch_size_per_gpu = total_batch_size // world_size
+    else:
+        batch_size_per_gpu = stage["batch_size"]
 
     # Allows for changes in batch size between stages.
-    train_loader, test_loader = build_train_and_test_loaders(
+    train_loader, test_loader, train_sampler = build_train_and_test_loaders(
         wfd,
         train_settings["data"]["train_fraction"],
-        stage["batch_size"],
+        batch_size_per_gpu,
         num_workers,
+        world_size=world_size,
+        rank=rank,
     )
 
     if not resume:
         # New optimizer and scheduler. If we are resuming, these should have been
         # loaded from the checkpoint.
-        print("Initializing new optimizer and scheduler.")
+        if print_output:
+            print("Initializing new optimizer and scheduler.")
         pm.optimizer_kwargs = stage["optimizer"]
         pm.scheduler_kwargs = stage["scheduler"]
         pm.initialize_optimizer_and_scheduler()
@@ -460,11 +596,12 @@ def initialize_stage(
             set_requires_grad_flag(
                 pm.network, name_contains="layers_rb", requires_grad=True
             )
-    n_grad = get_number_of_model_parameters(pm.network, (True,))
-    n_nograd = get_number_of_model_parameters(pm.network, (False,))
-    print(f"Fixed parameters: {n_nograd}\nLearnable parameters: {n_grad}\n")
+    if print_output:
+        n_grad = get_number_of_model_parameters(pm.network, (True,))
+        n_nograd = get_number_of_model_parameters(pm.network, (False,))
+        print(f"Fixed parameters: {n_nograd}\nLearnable parameters: {n_grad}\n")
 
-    return train_loader, test_loader
+    return train_loader, test_loader, train_sampler
 
 
 def train_stages(
@@ -493,6 +630,9 @@ def train_stages(
     runtime_limits = RuntimeLimits(
         epoch_start=pm.epoch, **local_settings["runtime_limits"]
     )
+    rank = local_settings.get("rank", None)
+    world_size = local_settings.get("world_size", None)
+    print_primary = rank is None or rank == 0
 
     # Extract list of stages from settings dict
     stages = []
@@ -510,16 +650,30 @@ def train_stages(
         stage = stages[n]
 
         if pm.epoch == end_epochs[n] - stage["epochs"]:
-            print(f"\nBeginning training stage {n}. Settings:")
-            print(yaml.dump(stage, default_flow_style=False, sort_keys=False))
-            train_loader, test_loader = initialize_stage(
-                pm, wfd, stage, local_settings["num_workers"], resume=False
+            if print_primary:
+                print(f"\nBeginning training stage {n}. Settings:")
+                print(yaml.dump(stage, default_flow_style=False, sort_keys=False))
+            train_loader, test_loader, train_sampler = initialize_stage(
+                pm,
+                wfd,
+                stage,
+                local_settings["num_workers"],
+                world_size=world_size,
+                rank=rank,
+                resume=False,
             )
         else:
-            print(f"\nResuming training in stage {n}. Settings:")
-            print(yaml.dump(stage, default_flow_style=False, sort_keys=False))
-            train_loader, test_loader = initialize_stage(
-                pm, wfd, stage, local_settings["num_workers"], resume=True
+            if print_primary:
+                print(f"\nResuming training in stage {n}. Settings:")
+                print(yaml.dump(stage, default_flow_style=False, sort_keys=False))
+            train_loader, test_loader, train_sampler = initialize_stage(
+                pm,
+                wfd,
+                stage,
+                local_settings["num_workers"],
+                world_size=world_size,
+                rank=rank,
+                resume=True,
             )
         early_stopping = None
         if stage.get("early_stopping"):
@@ -536,6 +690,7 @@ def train_stages(
             train_loader,
             test_loader,
             train_dir=train_dir,
+            train_sampler=train_sampler,
             runtime_limits=runtime_limits,
             checkpoint_epochs=local_settings["checkpoint_epochs"],
             use_wandb=local_settings.get("wandb", False),
@@ -548,12 +703,13 @@ def train_stages(
         if local_settings.get("test_only", False):
             return True
 
-        if pm.epoch == end_epochs[n]:
+        if pm.epoch == end_epochs[n] and print_primary:
             save_file = os.path.join(train_dir, f"model_stage_{n}.pt")
             print(f"Training stage complete. Saving to {save_file}.")
             pm.save_model(save_file, save_training_info=True)
         if runtime_limits.local_limits_exceeded(pm.epoch):
-            print("Local runtime limits reached. Ending program.")
+            if print_primary:
+                print("Local runtime limits reached. Ending program.")
             break
 
     if pm.epoch == end_epochs[-1]:
@@ -634,18 +790,28 @@ def train_local():
                     print("wandb not installed, cannot generate run id.")
             yaml.dump(local_settings, f, default_flow_style=False, sort_keys=False)
 
-        pm, wfd = prepare_training_new(train_settings, args.train_dir, local_settings)
-
     else:
         print("Resuming training run.")
         with open(os.path.join(args.train_dir, "local_settings.yaml"), "r") as f:
             local_settings = yaml.safe_load(f)
-        pm, wfd = prepare_training_resume(
-            args.checkpoint, local_settings, args.train_dir
-        )
+    use_ddp = _ddp_enabled(local_settings)
 
-    with threadpool_limits(limits=1, user_api="blas"):
-        complete = train_stages(pm, wfd, args.train_dir, local_settings)
+    if use_ddp:
+        complete = _run_multi_gpu_training(
+            train_settings if args.settings_file is not None else None,
+            local_settings,
+            args.train_dir,
+            args.checkpoint if args.settings_file is None else None,
+        )
+    else:
+        if args.settings_file is not None:
+            pm, wfd = prepare_training_new(train_settings, args.train_dir, local_settings)
+        else:
+            pm, wfd = prepare_training_resume(
+                args.checkpoint, local_settings, args.train_dir
+            )
+        with threadpool_limits(limits=1, user_api="blas"):
+            complete = train_stages(pm, wfd, args.train_dir, local_settings)
 
     if complete:
         if args.exit_command:

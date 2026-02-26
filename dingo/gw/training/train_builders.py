@@ -68,7 +68,13 @@ def build_dataset(
     return wfd
 
 
-def set_train_transforms(wfd, data_settings, asd_dataset_path, omit_transforms=None):
+def set_train_transforms(
+    wfd,
+    data_settings,
+    asd_dataset_path,
+    omit_transforms=None,
+    print_output=True,
+):
     """
     Set the transform attribute of a waveform dataset based on a settings dictionary.
     The transform takes waveform polarizations, samples random extrinsic parameters,
@@ -87,9 +93,10 @@ def set_train_transforms(wfd, data_settings, asd_dataset_path, omit_transforms=N
         List of sub-transforms to omit from the full composition.
     """
 
-    print(f"Setting train transforms.")
-    if omit_transforms is not None:
-        print("Omitting \n\t" + "\n\t".join([t.__name__ for t in omit_transforms]))
+    if print_output:
+        print(f"Setting train transforms.")
+        if omit_transforms is not None:
+            print("Omitting \n\t" + "\n\t".join([t.__name__ for t in omit_transforms]))
 
     # By passing the wfd domain when instantiating the noise dataset, this ensures the
     # domains will match. In particular, it truncates the ASD dataset beyond the new
@@ -170,9 +177,11 @@ def set_train_transforms(wfd, data_settings, asd_dataset_path, omit_transforms=N
     # parameters.
     try:
         standardization_dict = data_settings["standardization"]
-        print("Using previously-calculated parameter standardizations.")
+        if print_output:
+            print("Using previously-calculated parameter standardizations.")
     except KeyError:
-        print("Calculating new parameter standardizations.")
+        if print_output:
+            print("Calculating new parameter standardizations.")
         standardization_dict = get_standardization_dict(
             extrinsic_prior_dict,
             wfd,
