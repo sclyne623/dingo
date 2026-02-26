@@ -82,7 +82,6 @@ class WaveformDataset(DingoDataset, torch.utils.data.Dataset):
         # When True, __getitems__ returns batched transformed outputs directly.
         # This avoids expensive split/re-collate overhead for GPU fast paths.
         self.returns_batched_output = False
-        self._parameter_column_arrays = None
 
         if leave_waveforms_on_disk:
             leave_on_disk_keys = ["polarizations"]
@@ -315,16 +314,6 @@ class WaveformDataset(DingoDataset, torch.utils.data.Dataset):
             return self._extract_batch_item(data, 0)
         return data[0]
 
-    def _get_parameter_batch(self, batched_idx):
-        if self.parameters is None:
-            return {}
-        if self._parameter_column_arrays is None:
-            self._parameter_column_arrays = {
-                k: self.parameters[k].to_numpy(copy=False)
-                for k in self.parameters.columns
-            }
-        return {k: v[batched_idx] for k, v in self._parameter_column_arrays.items()}
-
     @staticmethod
     def _extract_batch_item(v: Any, j: int):
         if isinstance(v, dict):
@@ -391,7 +380,13 @@ class WaveformDataset(DingoDataset, torch.utils.data.Dataset):
                         }
                         for pol, subdict in polarizations.items()
                     }
-            parameters = self._get_parameter_batch(batched_idx)
+            parameters = {
+                k: v if isinstance(v, float) else v.to_numpy()
+                for k, v in self.parameters.iloc[batched_idx].items()
+            }
+            # Convert parameters to dict
+            if not isinstance(parameters, dict):
+                parameters = parameters.to_dict()
             # Update precision
             try:
                 if self.precision is not None:
@@ -417,7 +412,9 @@ class WaveformDataset(DingoDataset, torch.utils.data.Dataset):
                     else:
                         polarizations[k] = v[:, : self.svd_size_update]
         else:
-            parameters = self._get_parameter_batch(batched_idx)
+            parameters = {
+                k: v.to_numpy() for k, v in self.parameters.iloc[batched_idx].items()
+            }
             # Feel like this might be messy but this is where we generate the waveforms for on the fly
             if self.polarizations is None:
                 if not hasattr(self, "waveform_generator"):

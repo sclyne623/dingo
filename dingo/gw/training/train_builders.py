@@ -230,7 +230,6 @@ def set_train_transforms(wfd, data_settings, asd_dataset_path, omit_transforms=N
                 for k in ["inference_parameters", "context_parameters"]
             },
             standardization_dict,
-            device="cuda" if use_gpu_fastpath_for_this_transform else "cpu",
         )
     )
     transforms.append(

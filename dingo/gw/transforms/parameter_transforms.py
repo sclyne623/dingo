@@ -18,18 +18,10 @@ class SampleExtrinsicParameters(object):
         sample = input_sample.copy()
         batched, batch_size = get_batch_size_of_input_sample(input_sample)
         extrinsic_parameters = self.prior.sample(batch_size if batched else None)
-        params_ref = next(iter(input_sample["parameters"].values()))
-        if batched and isinstance(params_ref, torch.Tensor):
-            device = params_ref.device
-            extrinsic_parameters = {
-                k: torch.as_tensor(v, device=device, dtype=torch.float32)
-                for k, v in extrinsic_parameters.items()
-            }
-        else:
-            extrinsic_parameters = {
-                k: v.astype(np.float32) if batched else float(v)
-                for k, v in extrinsic_parameters.items()
-            }
+        extrinsic_parameters = {
+            k: v.astype(np.float32) if batched else float(v)
+            for k, v in extrinsic_parameters.items()
+        }
         sample["extrinsic_parameters"] = extrinsic_parameters
         return sample
 
