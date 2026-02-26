@@ -33,6 +33,18 @@ def _parse_args():
     parser.add_argument("--steps", type=int, default=500)
     parser.add_argument("--print_every", type=int, default=25)
     parser.add_argument("--warmup_steps", type=int, default=20)
+    parser.add_argument(
+        "--backend_native_fused",
+        type=str,
+        choices=["true", "false"],
+        default=None,
+        help="Override local.backend_native_fused for this run.",
+    )
+    parser.add_argument(
+        "--ab_backend_native_fused",
+        action="store_true",
+        help="Run A/B benchmark with backend_native_fused=False and True.",
+    )
     return parser.parse_args()
 
 
@@ -62,26 +74,15 @@ def _iter_with_background_prefetch(loader):
             yield batch
 
 
-def main():
-    args = _parse_args()
-
-    if torch.cuda.device_count() < 2:
-        raise RuntimeError(
-            f"Need at least 2 CUDA devices for this prototype; found {torch.cuda.device_count()}."
-        )
-
-    gen_device = torch.device("cuda:0")
-    train_device = torch.device("cuda:1")
+def _run_once(args, train_settings, local_settings, fused_flag, gen_device, train_device):
+    run_local_settings = deepcopy(local_settings)
+    run_local_settings["backend_native_fused"] = bool(fused_flag)
 
     # Make GPU0 default for generation path.
     torch.cuda.set_device(gen_device)
-
-    with open(args.settings_file, "r") as fp:
-        train_settings = yaml.safe_load(fp)
-
-    local_settings = deepcopy(train_settings.pop("local"))
-    # Build model/dataset with standard path first.
-    pm, wfd = prepare_training_new(train_settings, args.train_dir, local_settings)
+    pm, wfd = prepare_training_new(
+        deepcopy(train_settings), args.train_dir, run_local_settings
+    )
 
     # Move training network to GPU1 for compute.
     pm.network.to(train_device)
@@ -89,7 +90,7 @@ def main():
 
     stage0 = train_settings["training"]["stage_0"]
     train_loader, _ = initialize_stage(
-        pm, wfd, stage0, local_settings["num_workers"], resume=False
+        pm, wfd, stage0, run_local_settings["num_workers"], resume=False
     )
 
     pm.network.train()
@@ -136,7 +137,7 @@ def main():
 
     if counted == 0:
         print("No post-warmup steps were collected.")
-        return
+        return None
 
     avg_data = timings["data"] / counted
     avg_transfer = timings["transfer"] / counted
@@ -145,17 +146,88 @@ def main():
     batch_size = stage0["batch_size"]
     samples_per_sec = batch_size / total if total > 0 else float("nan")
 
+    summary = {
+        "backend_native_fused": bool(fused_flag),
+        "generation_gpu": str(gen_device),
+        "training_gpu": str(train_device),
+        "batch_size": int(batch_size),
+        "avg_data": float(avg_data),
+        "avg_transfer": float(avg_transfer),
+        "avg_network": float(avg_network),
+        "avg_total": float(total),
+        "samples_per_s": float(samples_per_sec),
+    }
     print("\n=== Two-GPU Prototype Summary ===")
-    print(f"generation gpu : {gen_device}")
-    print(f"training gpu   : {train_device}")
-    print(f"batch_size     : {batch_size}")
-    print(f"avg_data       : {avg_data:.3f}s")
-    print(f"avg_transfer   : {avg_transfer:.3f}s")
-    print(f"avg_network    : {avg_network:.3f}s")
-    print(f"avg_total      : {total:.3f}s")
-    print(f"samples_per_s  : {samples_per_sec:.1f}")
+    print(f"backend_native_fused: {summary['backend_native_fused']}")
+    print(f"generation gpu      : {summary['generation_gpu']}")
+    print(f"training gpu        : {summary['training_gpu']}")
+    print(f"batch_size          : {summary['batch_size']}")
+    print(f"avg_data            : {summary['avg_data']:.3f}s")
+    print(f"avg_transfer        : {summary['avg_transfer']:.3f}s")
+    print(f"avg_network         : {summary['avg_network']:.3f}s")
+    print(f"avg_total           : {summary['avg_total']:.3f}s")
+    print(f"samples_per_s       : {summary['samples_per_s']:.1f}")
+    return summary
+
+
+def main():
+    args = _parse_args()
+
+    if torch.cuda.device_count() < 2:
+        raise RuntimeError(
+            f"Need at least 2 CUDA devices for this prototype; found {torch.cuda.device_count()}."
+        )
+
+    gen_device = torch.device("cuda:0")
+    train_device = torch.device("cuda:1")
+
+    with open(args.settings_file, "r") as fp:
+        settings_blob = yaml.safe_load(fp)
+
+    local_settings = deepcopy(settings_blob.pop("local"))
+    train_settings = deepcopy(settings_blob)
+
+    if args.ab_backend_native_fused:
+        results = []
+        for fused_flag in (False, True):
+            print(f"\n--- A/B run: backend_native_fused={fused_flag} ---")
+            result = _run_once(
+                args,
+                train_settings,
+                local_settings,
+                fused_flag,
+                gen_device,
+                train_device,
+            )
+            if result is not None:
+                results.append(result)
+            torch.cuda.empty_cache()
+
+        if len(results) == 2:
+            off = results[0]
+            on = results[1]
+            speedup = (
+                on["samples_per_s"] / off["samples_per_s"]
+                if off["samples_per_s"] > 0
+                else float("nan")
+            )
+            print("\n=== A/B Comparison ===")
+            print(
+                f"fused=False samples_per_s: {off['samples_per_s']:.1f} "
+                f"(avg_total={off['avg_total']:.3f}s)"
+            )
+            print(
+                f"fused=True  samples_per_s: {on['samples_per_s']:.1f} "
+                f"(avg_total={on['avg_total']:.3f}s)"
+            )
+            print(f"speedup (on/off): {speedup:.3f}x")
+        return
+
+    fused_flag = local_settings.get("backend_native_fused", False)
+    if args.backend_native_fused is not None:
+        fused_flag = args.backend_native_fused.lower() == "true"
+    _run_once(args, train_settings, local_settings, fused_flag, gen_device, train_device)
 
 
 if __name__ == "__main__":
     main()
-

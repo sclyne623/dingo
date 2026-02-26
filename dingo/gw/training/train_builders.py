@@ -191,9 +191,16 @@ def set_train_transforms(wfd, data_settings, asd_dataset_path, omit_transforms=N
         and hasattr(wfd, "waveform_generator")
         and getattr(wfd.waveform_generator, "use_gpu", False)
     )
+    bbhx_backend_native_fused = (
+        bbhx_gpu_fastpath
+        and waveform_generator_settings.get("backend_native_fused", False)
+    )
     # SVD initialization intentionally omits downstream formatting/noise transforms
     # and expects CPU numpy arrays. Keep GPU fast-path for full train/test transforms.
     use_gpu_fastpath_for_this_transform = bbhx_gpu_fastpath and omit_transforms is None
+    use_backend_native_fused_for_this_transform = (
+        bbhx_backend_native_fused and omit_transforms is None
+    )
     if data_settings["detector_type"] == "LISA":
         if bbhx_direct_response:
             if not hasattr(wfd, "waveform_generator"):
@@ -206,6 +213,7 @@ def set_train_transforms(wfd, data_settings, asd_dataset_path, omit_transforms=N
                     wfd.waveform_generator,
                     data_settings["detectors"],
                     gpu_fastpath=use_gpu_fastpath_for_this_transform,
+                    backend_native_fused=use_backend_native_fused_for_this_transform,
                 )
             )
         else:

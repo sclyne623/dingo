@@ -228,6 +228,25 @@ def prepare_training_new(
         leave_waveforms_on_disk=local_settings.get("leave_waveforms_on_disk", True),
         on_fly=local_settings.get("on_fly", True),
     )  # No transforms yet
+    waveform_generator_settings = wfd.settings.setdefault("waveform_generator", {})
+    if waveform_generator_settings.get("BBHx", False):
+        if "gpu_fastpath" in local_settings:
+            waveform_generator_settings["gpu_fastpath"] = bool(
+                local_settings["gpu_fastpath"]
+            )
+        if "backend_native_fused" in local_settings:
+            waveform_generator_settings["backend_native_fused"] = bool(
+                local_settings["backend_native_fused"]
+            )
+        if hasattr(wfd, "waveform_generator"):
+            if "gpu_fastpath" in waveform_generator_settings:
+                wfd.waveform_generator.gpu_fastpath = bool(
+                    waveform_generator_settings["gpu_fastpath"]
+                )
+            if "backend_native_fused" in waveform_generator_settings:
+                wfd.waveform_generator.backend_native_fused = bool(
+                    waveform_generator_settings["backend_native_fused"]
+                )
     initial_weights = {}
 
     # The embedding network is assumed to have an SVD projection layer. If other types

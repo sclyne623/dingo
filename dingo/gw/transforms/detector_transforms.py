@@ -212,7 +212,13 @@ class GenerateBBHxDirectResponse(object):
     generation on GPU.
     """
 
-    def __init__(self, waveform_generator, channels, gpu_fastpath=False):
+    def __init__(
+        self,
+        waveform_generator,
+        channels,
+        gpu_fastpath=False,
+        backend_native_fused=False,
+    ):
         from dingo.gw.waveform_generator.waveform_generator import BBHxWaveformGenerator
 
         if not isinstance(waveform_generator, BBHxWaveformGenerator):
@@ -222,6 +228,7 @@ class GenerateBBHxDirectResponse(object):
         self.waveform_generator = waveform_generator
         self.channels = channels
         self.gpu_fastpath = bool(gpu_fastpath)
+        self.backend_native_fused = bool(backend_native_fused)
         self.device = torch.device(
             "cuda"
             if self.gpu_fastpath and getattr(self.waveform_generator, "use_gpu", False)
@@ -279,16 +286,24 @@ class GenerateBBHxDirectResponse(object):
         parameters = sample["parameters"].copy()
         extrinsic_parameters = sample["extrinsic_parameters"].copy()
 
-        # Build full parameter dict for BBHx generation. Extrinsic values should
-        # override reference intrinsic placeholders.
-        full_parameters = {**parameters, **extrinsic_parameters}
-        wf = self.waveform_generator.generate_amp_phase(
-            full_parameters, catch_waveform_errors=False
-        )
-        if self.gpu_fastpath:
-            h = self._to_torch_waveform(wf["waveform"])
+        if self.gpu_fastpath and self.backend_native_fused:
+            h = self.waveform_generator.generate_direct_response_backend_native(
+                parameters,
+                extrinsic_parameters,
+                catch_waveform_errors=False,
+            )
+            h = self._to_torch_waveform(h)
         else:
-            h = self._normalize_waveform_shape(wf["waveform"])
+            # Build full parameter dict for BBHx generation. Extrinsic values should
+            # override reference intrinsic placeholders.
+            full_parameters = {**parameters, **extrinsic_parameters}
+            wf = self.waveform_generator.generate_amp_phase(
+                full_parameters, catch_waveform_errors=False
+            )
+            if self.gpu_fastpath:
+                h = self._to_torch_waveform(wf["waveform"])
+            else:
+                h = self._normalize_waveform_shape(wf["waveform"])
 
         chan1 = h[:, 0, :]
         if isinstance(h, torch.Tensor):

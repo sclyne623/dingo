@@ -2003,6 +2003,7 @@ class BBHxWaveformGenerator:
         self.use_gpu = use_gpu
         self.direct_response = bool(kwargs.get("direct_response", False))
         self.gpu_fastpath = bool(kwargs.get("gpu_fastpath", False))
+        self.backend_native_fused = bool(kwargs.get("backend_native_fused", False))
         self.bbhx_length = int(kwargs.get("bbhx_length", 1024))
         self.orbits = None
         self._cached_output_freqs_cpu = None
@@ -2171,6 +2172,152 @@ class BBHxWaveformGenerator:
         if hasattr(self.domain, "base_domain"):
             return np.asarray(self.domain.base_domain.sample_frequencies, dtype=np.float64)
         return self._build_bbhx_frequency_grid()
+
+    @staticmethod
+    def _pick_value(extrinsic_parameters: Dict[str, float], intrinsic_parameters: Dict[str, float], keys, default=None):
+        for key in keys:
+            if key in extrinsic_parameters:
+                return extrinsic_parameters[key]
+            if key in intrinsic_parameters:
+                return intrinsic_parameters[key]
+        return default
+
+    @staticmethod
+    def _to_float64_array(x):
+        if np.isscalar(x):
+            return np.asarray(float(x), dtype=np.float64)
+        return np.asarray(x, dtype=np.float64)
+
+    def _infer_batch_size(self, *values) -> int:
+        for v in values:
+            if v is None:
+                continue
+            arr = np.asarray(v)
+            if arr.ndim > 0 and arr.size > 1:
+                return int(arr.size)
+        return 1
+
+    def _coerce_batch_value(self, x, n: int, name: str):
+        arr = self._to_float64_array(x)
+        if arr.ndim == 0:
+            return np.full(n, float(arr), dtype=np.float64)
+        if arr.size == n:
+            return arr.astype(np.float64, copy=False).reshape(n)
+        if arr.size == 1:
+            return np.full(n, float(arr.ravel()[0]), dtype=np.float64)
+        raise ValueError(
+            f"BBHx parameter '{name}' has incompatible length {arr.size}, expected 1 or {n}."
+        )
+
+    def generate_direct_response_backend_native(
+        self,
+        intrinsic_parameters: Dict[str, float],
+        extrinsic_parameters: Dict[str, float],
+        catch_waveform_errors: bool = False,
+    ):
+        """
+        Backend-native fused direct-response path for BBHx GPU fast training.
+        Avoids merged parameter dicts and extra Python bookkeeping in transforms.
+        """
+        freqs = self._get_cached_backend_frequency_grid()
+        try:
+            m1 = self._pick_value(extrinsic_parameters, intrinsic_parameters, ["mass_1", "m1"])
+            m2 = self._pick_value(extrinsic_parameters, intrinsic_parameters, ["mass_2", "m2"])
+            chirp_mass = self._pick_value(
+                extrinsic_parameters, intrinsic_parameters, ["chirp_mass", "Mchirp"]
+            )
+            q = self._pick_value(extrinsic_parameters, intrinsic_parameters, ["mass_ratio", "q"])
+
+            n = self._infer_batch_size(m1, m2, chirp_mass, q)
+
+            if m1 is None or m2 is None:
+                if chirp_mass is None or q is None:
+                    raise ValueError(
+                        "BBHxWaveformGenerator requires either (mass_1, mass_2) or "
+                        "(chirp_mass/Mchirp, mass_ratio/q)."
+                    )
+                chirp_arr = self._coerce_batch_value(chirp_mass, n, "chirp_mass")
+                q_arr = self._coerce_batch_value(q, n, "q")
+                m1, m2 = self._masses_from_chirp_mass_and_q(chirp_arr, q_arr)
+
+            chi1z = self._pick_value(
+                extrinsic_parameters, intrinsic_parameters, ["chi_1z", "chi1z", "chi_1", "chi1"], 0.0
+            )
+            chi2z = self._pick_value(
+                extrinsic_parameters, intrinsic_parameters, ["chi_2z", "chi2z", "chi_2", "chi2"], 0.0
+            )
+            distance_mpc = self._pick_value(
+                extrinsic_parameters,
+                intrinsic_parameters,
+                ["luminosity_distance", "dist", "redshift_distance"],
+                None,
+            )
+            if distance_mpc is None:
+                raise ValueError(
+                    "BBHxWaveformGenerator requires luminosity_distance/dist (Mpc)."
+                )
+            inc = self._pick_value(extrinsic_parameters, intrinsic_parameters, ["theta_jn", "inc"], 0.0)
+            phase = self._pick_value(extrinsic_parameters, intrinsic_parameters, ["phase", "phi"], 0.0)
+            lam = self._pick_value(extrinsic_parameters, intrinsic_parameters, ["ra", "lambda", "lambd"], 0.0)
+            beta = self._pick_value(extrinsic_parameters, intrinsic_parameters, ["dec", "beta"], 0.0)
+            psi = self._pick_value(extrinsic_parameters, intrinsic_parameters, ["psi"], 0.0)
+
+            if "t_ref" in extrinsic_parameters or "t_ref" in intrinsic_parameters:
+                t_ref = self._pick_value(extrinsic_parameters, intrinsic_parameters, ["t_ref"])
+            elif "t_ref_years" in extrinsic_parameters or "t_ref_years" in intrinsic_parameters:
+                t_ref = self._pick_value(
+                    extrinsic_parameters, intrinsic_parameters, ["t_ref_years"]
+                )
+                t_ref = self._to_float64_array(t_ref) * YRSID_SI
+            elif "geocent_time" in extrinsic_parameters or "geocent_time" in intrinsic_parameters:
+                t_ref = self._pick_value(
+                    extrinsic_parameters, intrinsic_parameters, ["geocent_time"]
+                )
+            else:
+                t_ref = 0.5 * YRSID_SI
+
+            m1 = self._coerce_batch_value(m1, n, "m1")
+            m2 = self._coerce_batch_value(m2, n, "m2")
+            chi1z = self._coerce_batch_value(chi1z, n, "chi1z")
+            chi2z = self._coerce_batch_value(chi2z, n, "chi2z")
+            distance_mpc = self._coerce_batch_value(distance_mpc, n, "distance_mpc")
+            inc = self._coerce_batch_value(inc, n, "inc")
+            phase = self._coerce_batch_value(phase, n, "phase")
+            lam = self._coerce_batch_value(lam, n, "lam")
+            beta = self._coerce_batch_value(beta, n, "beta")
+            psi = self._coerce_batch_value(psi, n, "psi")
+            t_ref = self._coerce_batch_value(t_ref, n, "t_ref")
+            t_ref = np.where(np.isclose(t_ref, 0.0, atol=1e-3), 0.5 * YRSID_SI, t_ref)
+
+            distance_si = distance_mpc * PC_SI * 1e6
+            waveform_data = self.waveform_gen(
+                m1,
+                m2,
+                chi1z,
+                chi2z,
+                distance_si,
+                phase,
+                self.f_ref,
+                inc,
+                lam,
+                beta,
+                psi,
+                t_ref,
+                freqs=freqs,
+                modes=self.mode_list,
+                direct=False,
+                fill=True,
+                squeeze=True,
+                length=self.bbhx_length,
+            )
+            if self.use_gpu:
+                return waveform_data
+            return self._to_numpy(waveform_data)
+        except Exception:
+            if not catch_waveform_errors:
+                raise
+            nan_shape = (3, len(freqs))
+            return np.full(nan_shape, np.nan, dtype=np.complex128)
 
     def _get_cached_backend_frequency_grid(self):
         """Return cached output frequencies in backend array type."""
