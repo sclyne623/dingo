@@ -70,6 +70,7 @@ def _load_precomputed_v_rb_list(
         )
 
     v_rb_list = []
+    sizes = []
     for ifo, path in zip(detectors, file_list):
         file_path = _resolve_svd_file_path(path, train_dir)
         print(f"Loading precomputed SVD for {ifo} from {file_path}")
@@ -78,8 +79,16 @@ def _load_precomputed_v_rb_list(
         if V is None:
             raise ValueError(f"No V matrix found in {file_path}")
         V = V[domain_min_idx:]
+        sizes.append(V.shape[1])
         v_rb_list.append(V)
-    return v_rb_list
+    common_size = min(sizes)
+    if len(set(sizes)) > 1:
+        print(
+            "Warning: precomputed SVD sizes differ across detectors: "
+            f"{sizes}. Truncating all to common size {common_size}."
+        )
+        v_rb_list = [V[:, :common_size] for V in v_rb_list]
+    return v_rb_list, common_size
 
 
 def copy_files_to_local(
@@ -174,11 +183,18 @@ def prepare_training_new(
         precomputed_files = svd_kwargs.pop("precomputed_files", None)
         if precomputed_files is not None:
             print("\nUsing precomputed SVD matrices for embedding network.")
-            initial_weights["V_rb_list"] = _load_precomputed_v_rb_list(
+            v_rb_list, inferred_size = _load_precomputed_v_rb_list(
                 precomputed_files=precomputed_files,
                 detectors=train_settings["data"]["detectors"],
                 domain_min_idx=wfd.domain.min_idx,
                 train_dir=train_dir,
+            )
+            initial_weights["V_rb_list"] = v_rb_list
+            # Ensure embedding network receives the required RB size even when
+            # training YAML omits it for precomputed-file mode.
+            train_settings["model"]["embedding_kwargs"].setdefault("svd", {})
+            train_settings["model"]["embedding_kwargs"]["svd"]["size"] = int(
+                inferred_size
             )
         else:
             # First, build the SVD for seeding the embedding network.
