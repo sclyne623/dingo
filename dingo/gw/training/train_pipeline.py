@@ -188,9 +188,33 @@ def _run_training_ddp_worker(
         local_settings_rank["two_gpu_split"] = False
 
         if checkpoint_name is None:
-            pm, wfd = prepare_training_new(
-                deepcopy(train_settings), train_dir, local_settings_rank
+            train_settings_rank = deepcopy(train_settings)
+            svd_cfg = (
+                train_settings_rank.get("model", {})
+                .get("embedding_kwargs", {})
+                .get("svd", {})
             )
+            needs_svd_build = bool(
+                svd_cfg and ("precomputed_files" not in svd_cfg)
+            )
+
+            if needs_svd_build and rank != 0:
+                # Rank 0 builds SVD once and writes svd_<ifo>.hdf5 in train_dir.
+                torch.distributed.barrier()
+                detectors = train_settings_rank["data"]["detectors"]
+                svd_cfg["precomputed_files"] = {
+                    ifo: os.path.join(train_dir, f"svd_{ifo}.hdf5")
+                    for ifo in detectors
+                }
+                pm, wfd = prepare_training_new(
+                    train_settings_rank, train_dir, local_settings_rank
+                )
+            else:
+                pm, wfd = prepare_training_new(
+                    train_settings_rank, train_dir, local_settings_rank
+                )
+                if needs_svd_build and rank == 0:
+                    torch.distributed.barrier()
         else:
             pm, wfd = prepare_training_resume(
                 checkpoint_name, local_settings_rank, train_dir
