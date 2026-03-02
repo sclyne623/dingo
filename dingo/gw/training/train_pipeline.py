@@ -46,6 +46,30 @@ def _resolve_svd_file_path(path: str, train_dir: str) -> str:
     return os.path.join(train_dir, path)
 
 
+def _wait_for_files(
+    file_paths,
+    timeout_s: float = 7200.0,
+    poll_s: float = 5.0,
+):
+    """
+    Wait for all paths in file_paths to exist.
+
+    This is used in DDP startup to let rank 0 build SVD files while other ranks wait
+    without using NCCL collectives (which can timeout during long SVD construction).
+    """
+    start = time.time()
+    missing = [p for p in file_paths if not os.path.exists(p)]
+    while missing:
+        elapsed = time.time() - start
+        if elapsed > timeout_s:
+            raise TimeoutError(
+                "Timed out waiting for precomputed SVD files to appear: "
+                f"{missing}. Waited {elapsed:.1f}s."
+            )
+        time.sleep(poll_s)
+        missing = [p for p in file_paths if not os.path.exists(p)]
+
+
 def _load_precomputed_v_rb_list(
     precomputed_files,
     detectors,
@@ -199,13 +223,22 @@ def _run_training_ddp_worker(
             )
 
             if needs_svd_build and rank != 0:
-                # Rank 0 builds SVD once and writes svd_<ifo>.hdf5 in train_dir.
-                torch.distributed.barrier()
                 detectors = train_settings_rank["data"]["detectors"]
-                svd_cfg["precomputed_files"] = {
+                precomputed_files = {
                     ifo: os.path.join(train_dir, f"svd_{ifo}.hdf5")
                     for ifo in detectors
                 }
+                timeout_s = float(
+                    local_settings.get("distributed", {}).get(
+                        "svd_wait_timeout_s", 7200
+                    )
+                )
+                _wait_for_files(
+                    list(precomputed_files.values()),
+                    timeout_s=timeout_s,
+                    poll_s=5.0,
+                )
+                svd_cfg["precomputed_files"] = precomputed_files
                 pm, wfd = prepare_training_new(
                     train_settings_rank, train_dir, local_settings_rank
                 )
@@ -213,8 +246,6 @@ def _run_training_ddp_worker(
                 pm, wfd = prepare_training_new(
                     train_settings_rank, train_dir, local_settings_rank
                 )
-                if needs_svd_build and rank == 0:
-                    torch.distributed.barrier()
         else:
             pm, wfd = prepare_training_resume(
                 checkpoint_name, local_settings_rank, train_dir
