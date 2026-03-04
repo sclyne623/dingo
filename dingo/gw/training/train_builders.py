@@ -204,6 +204,12 @@ def set_train_transforms(
         bbhx_gpu_fastpath
         and waveform_generator_settings.get("backend_native_fused", False)
     )
+    bbhx_timing_profile = bool(
+        waveform_generator_settings.get("timing_profile", False)
+    )
+    bbhx_timing_profile_print_every = int(
+        waveform_generator_settings.get("timing_profile_print_every", 0)
+    )
     # SVD initialization intentionally omits downstream formatting/noise transforms
     # and expects CPU numpy arrays. Keep GPU fast-path for full train/test transforms.
     use_gpu_fastpath_for_this_transform = bbhx_gpu_fastpath and omit_transforms is None
@@ -223,6 +229,8 @@ def set_train_transforms(
                     data_settings["detectors"],
                     gpu_fastpath=use_gpu_fastpath_for_this_transform,
                     backend_native_fused=use_backend_native_fused_for_this_transform,
+                    timing_profile=bbhx_timing_profile,
+                    timing_profile_print_every=bbhx_timing_profile_print_every,
                 )
             )
         else:

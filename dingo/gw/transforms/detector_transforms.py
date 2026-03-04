@@ -2,6 +2,7 @@ import math
 import numpy as np
 import torch
 import pandas as pd
+import time
 from bilby.gw.detector.interferometer import Interferometer
 from lal import GreenwichMeanSiderealTime
 from typing import Union
@@ -218,6 +219,8 @@ class GenerateBBHxDirectResponse(object):
         channels,
         gpu_fastpath=False,
         backend_native_fused=False,
+        timing_profile=False,
+        timing_profile_print_every=0,
     ):
         from dingo.gw.waveform_generator.waveform_generator import BBHxWaveformGenerator
 
@@ -229,11 +232,63 @@ class GenerateBBHxDirectResponse(object):
         self.channels = channels
         self.gpu_fastpath = bool(gpu_fastpath)
         self.backend_native_fused = bool(backend_native_fused)
+        self.timing_profile = bool(timing_profile)
+        self.timing_profile_print_every = int(timing_profile_print_every)
         self.device = torch.device(
             "cuda"
             if self.gpu_fastpath and getattr(self.waveform_generator, "use_gpu", False)
             else "cpu"
         )
+        self.reset_timing_stats()
+
+    def reset_timing_stats(self):
+        self._timing_count = 0
+        self._timing_totals = {
+            "copy_inputs": 0.0,
+            "merge_params": 0.0,
+            "waveform_generate": 0.0,
+            "to_torch_or_normalize": 0.0,
+            "channel_pack": 0.0,
+            "parameter_bookkeeping": 0.0,
+            "total": 0.0,
+        }
+
+    def _record_timing(self, key, dt):
+        if self.timing_profile:
+            self._timing_totals[key] += dt
+
+    def _finalize_timing(self, total_dt):
+        if not self.timing_profile:
+            return
+        self._timing_count += 1
+        self._timing_totals["total"] += total_dt
+        if (
+            self.timing_profile_print_every > 0
+            and self._timing_count % self.timing_profile_print_every == 0
+        ):
+            stats = self.get_timing_stats()
+            print(
+                "[BBHxTiming] "
+                f"n={stats['count']} "
+                f"total={stats['avg_total']:.4f}s "
+                f"gen={stats['avg_waveform_generate']:.4f}s "
+                f"pack={stats['avg_channel_pack']:.4f}s "
+                f"bookkeeping={stats['avg_parameter_bookkeeping']:.4f}s"
+            )
+
+    def get_timing_stats(self, reset=False):
+        count = self._timing_count
+        safe_count = max(count, 1)
+        out = {
+            "enabled": self.timing_profile,
+            "count": count,
+        }
+        for key, total in self._timing_totals.items():
+            out[f"total_{key}"] = float(total)
+            out[f"avg_{key}"] = float(total) / safe_count
+        if reset:
+            self.reset_timing_stats()
+        return out
 
     @staticmethod
     def _get_first(d, keys, default=None):
@@ -282,29 +337,53 @@ class GenerateBBHxDirectResponse(object):
         return self._normalize_waveform_shape(t)
 
     def __call__(self, input_sample):
+        total_t0 = time.perf_counter() if self.timing_profile else None
+
+        t0 = time.perf_counter() if self.timing_profile else None
         sample = input_sample.copy()
         parameters = sample["parameters"].copy()
         extrinsic_parameters = sample["extrinsic_parameters"].copy()
+        if self.timing_profile:
+            self._record_timing("copy_inputs", time.perf_counter() - t0)
 
         if self.gpu_fastpath and self.backend_native_fused:
+            t0 = time.perf_counter() if self.timing_profile else None
             h = self.waveform_generator.generate_direct_response_backend_native(
                 parameters,
                 extrinsic_parameters,
                 catch_waveform_errors=False,
             )
+            if self.timing_profile:
+                self._record_timing("waveform_generate", time.perf_counter() - t0)
+
+            t0 = time.perf_counter() if self.timing_profile else None
             h = self._to_torch_waveform(h)
+            if self.timing_profile:
+                self._record_timing("to_torch_or_normalize", time.perf_counter() - t0)
         else:
             # Build full parameter dict for BBHx generation. Extrinsic values should
             # override reference intrinsic placeholders.
+            t0 = time.perf_counter() if self.timing_profile else None
             full_parameters = {**parameters, **extrinsic_parameters}
+            if self.timing_profile:
+                self._record_timing("merge_params", time.perf_counter() - t0)
+
+            t0 = time.perf_counter() if self.timing_profile else None
             wf = self.waveform_generator.generate_amp_phase(
                 full_parameters, catch_waveform_errors=False
             )
+            if self.timing_profile:
+                self._record_timing("waveform_generate", time.perf_counter() - t0)
+
+            t0 = time.perf_counter() if self.timing_profile else None
             if self.gpu_fastpath:
                 h = self._to_torch_waveform(wf["waveform"])
             else:
                 h = self._normalize_waveform_shape(wf["waveform"])
+            if self.timing_profile:
+                self._record_timing("to_torch_or_normalize", time.perf_counter() - t0)
 
+        t0 = time.perf_counter() if self.timing_profile else None
         chan1 = h[:, 0, :]
         if isinstance(h, torch.Tensor):
             chan2 = h[:, 1, :] if h.shape[1] > 1 else torch.zeros_like(chan1)
@@ -316,8 +395,11 @@ class GenerateBBHxDirectResponse(object):
         strains = {"chan1": chan1, "chan2": chan2}
         if "chan3" in self.channels:
             strains["chan3"] = chan3
+        if self.timing_profile:
+            self._record_timing("channel_pack", time.perf_counter() - t0)
 
         # Keep parameter bookkeeping consistent with downstream transforms.
+        t0 = time.perf_counter() if self.timing_profile else None
         dist = self._get_first(
             extrinsic_parameters,
             ["dist", "luminosity_distance"],
@@ -370,6 +452,9 @@ class GenerateBBHxDirectResponse(object):
         sample["waveform"] = strains
         sample["parameters"] = parameters
         sample["extrinsic_parameters"] = extrinsic_parameters
+        if self.timing_profile:
+            self._record_timing("parameter_bookkeeping", time.perf_counter() - t0)
+            self._finalize_timing(time.perf_counter() - total_t0)
         return sample
 
 
