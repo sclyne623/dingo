@@ -228,10 +228,15 @@ def _run_training_ddp_worker(
                     ifo: os.path.join(train_dir, f"svd_{ifo}.hdf5")
                     for ifo in detectors
                 }
-                timeout_s = float(
-                    local_settings.get("distributed", {}).get(
-                        "svd_wait_timeout_s", 7200
-                    )
+                timeout_raw = local_settings.get("distributed", {}).get(
+                    "svd_wait_timeout_s",
+                    local_settings.get("svd_wait_timeout_s", 7200),
+                )
+                timeout_s = float(timeout_raw)
+                print(
+                    "DDP rank "
+                    f"{rank}: waiting for precomputed SVD files with timeout {timeout_s:.0f}s: "
+                    f"{list(precomputed_files.values())}"
                 )
                 _wait_for_files(
                     list(precomputed_files.values()),
@@ -413,6 +418,14 @@ def prepare_training_new(
             waveform_generator_settings["backend_native_fused"] = bool(
                 local_settings["backend_native_fused"]
             )
+        if "timing_profile" in local_settings:
+            waveform_generator_settings["timing_profile"] = bool(
+                local_settings["timing_profile"]
+            )
+        if "timing_profile_print_every" in local_settings:
+            waveform_generator_settings["timing_profile_print_every"] = int(
+                local_settings["timing_profile_print_every"]
+            )
         if hasattr(wfd, "waveform_generator"):
             if "gpu_fastpath" in waveform_generator_settings:
                 wfd.waveform_generator.gpu_fastpath = bool(
@@ -421,6 +434,14 @@ def prepare_training_new(
             if "backend_native_fused" in waveform_generator_settings:
                 wfd.waveform_generator.backend_native_fused = bool(
                     waveform_generator_settings["backend_native_fused"]
+                )
+            if "timing_profile" in waveform_generator_settings:
+                wfd.waveform_generator.timing_profile = bool(
+                    waveform_generator_settings["timing_profile"]
+                )
+            if "timing_profile_print_every" in waveform_generator_settings:
+                wfd.waveform_generator.timing_profile_print_every = int(
+                    waveform_generator_settings["timing_profile_print_every"]
                 )
     initial_weights = {}
 
@@ -553,6 +574,32 @@ def prepare_training_resume(
         leave_waveforms_on_disk=local_settings.get("leave_waveforms_on_disk", True),
         on_fly=local_settings.get("on_fly", True),
     )
+    waveform_generator_settings = wfd.settings.setdefault("waveform_generator", {})
+    if waveform_generator_settings.get("BBHx", False) and hasattr(wfd, "waveform_generator"):
+        if "gpu_fastpath" in local_settings:
+            waveform_generator_settings["gpu_fastpath"] = bool(
+                local_settings["gpu_fastpath"]
+            )
+            wfd.waveform_generator.gpu_fastpath = bool(local_settings["gpu_fastpath"])
+        if "backend_native_fused" in local_settings:
+            waveform_generator_settings["backend_native_fused"] = bool(
+                local_settings["backend_native_fused"]
+            )
+            wfd.waveform_generator.backend_native_fused = bool(
+                local_settings["backend_native_fused"]
+            )
+        if "timing_profile" in local_settings:
+            waveform_generator_settings["timing_profile"] = bool(
+                local_settings["timing_profile"]
+            )
+            wfd.waveform_generator.timing_profile = bool(local_settings["timing_profile"])
+        if "timing_profile_print_every" in local_settings:
+            waveform_generator_settings["timing_profile_print_every"] = int(
+                local_settings["timing_profile_print_every"]
+            )
+            wfd.waveform_generator.timing_profile_print_every = int(
+                local_settings["timing_profile_print_every"]
+            )
 
     if local_settings.get("wandb", False):
         try:
