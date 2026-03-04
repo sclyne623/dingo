@@ -4,7 +4,7 @@ Single-GPU BBHx timing profiler for DINGO LISA training.
 Profiles:
 - Data pipeline time (DataLoader + transforms)
 - Batch transfer time (to training GPU)
-- Network time (forward + backward + optimizer)
+- Optional network time (forward + backward + optimizer)
 - Optional internal timing breakdown from GenerateBBHxDirectResponse
 
 Usage:
@@ -22,7 +22,9 @@ import torch
 import yaml
 
 from dingo.gw.training.train_pipeline import prepare_training_new, initialize_stage
+from dingo.gw.training.train_builders import build_dataset, set_train_transforms
 from dingo.gw.transforms.detector_transforms import GenerateBBHxDirectResponse
+from dingo.core.utils import build_train_and_test_loaders
 
 
 def _parse_args():
@@ -32,6 +34,15 @@ def _parse_args():
     parser.add_argument("--steps", type=int, default=500)
     parser.add_argument("--warmup_steps", type=int, default=20)
     parser.add_argument("--print_every", type=int, default=25)
+    parser.add_argument(
+        "--profile_mode",
+        choices=["data_only", "full"],
+        default="data_only",
+        help=(
+            "data_only: profile waveform+response dataloader path only (default). "
+            "full: include network forward/backward/optimizer."
+        ),
+    )
     parser.add_argument(
         "--backend_native_fused",
         type=str,
@@ -124,34 +135,73 @@ def main():
             args.backend_native_fused.lower() == "true"
         )
 
-    pm, wfd = prepare_training_new(
-        deepcopy(train_settings),
-        args.train_dir,
-        local_settings,
-    )
-    pm.network.to(device)
-    pm.device = device
-
-    # Enable transform-level timing instrumentation.
-    waveform_generator_settings = wfd.settings.setdefault("waveform_generator", {})
-    waveform_generator_settings["timing_profile"] = True
-    waveform_generator_settings["timing_profile_print_every"] = int(
-        args.transform_timing_print_every
-    )
-    if args.backend_native_fused is not None:
-        fused_flag = args.backend_native_fused.lower() == "true"
-        waveform_generator_settings["backend_native_fused"] = bool(fused_flag)
-        if hasattr(wfd, "waveform_generator"):
-            wfd.waveform_generator.backend_native_fused = bool(fused_flag)
-
     stage0 = train_settings["training"]["stage_0"]
-    train_loader, _ = initialize_stage(
-        pm,
-        wfd,
-        stage0,
-        local_settings["num_workers"],
-        resume=False,
-    )
+
+    if args.profile_mode == "data_only":
+        data_settings = deepcopy(train_settings["data"])
+        wfd = build_dataset(
+            data_settings=data_settings,
+            leave_waveforms_on_disk=local_settings.get("leave_waveforms_on_disk", True),
+            on_fly=local_settings.get("on_fly", True),
+        )
+
+        # Enable transform-level timing instrumentation before transform construction.
+        waveform_generator_settings = wfd.settings.setdefault("waveform_generator", {})
+        waveform_generator_settings["timing_profile"] = True
+        waveform_generator_settings["timing_profile_print_every"] = int(
+            args.transform_timing_print_every
+        )
+        if args.backend_native_fused is not None:
+            fused_flag = args.backend_native_fused.lower() == "true"
+            waveform_generator_settings["backend_native_fused"] = bool(fused_flag)
+            if hasattr(wfd, "waveform_generator"):
+                wfd.waveform_generator.backend_native_fused = bool(fused_flag)
+
+        set_train_transforms(
+            wfd,
+            train_settings["data"],
+            stage0["asd_dataset_path"],
+            print_output=True,
+        )
+
+        train_loader, _, _ = build_train_and_test_loaders(
+            wfd,
+            train_settings["data"]["train_fraction"],
+            stage0["batch_size"],
+            local_settings["num_workers"],
+            world_size=None,
+            rank=None,
+        )
+        pm = None
+    else:
+        # full mode: includes model timing; may build/load SVD as in normal training.
+        pm, wfd = prepare_training_new(
+            deepcopy(train_settings),
+            args.train_dir,
+            local_settings,
+        )
+        pm.network.to(device)
+        pm.device = device
+
+        # Enable transform-level timing instrumentation.
+        waveform_generator_settings = wfd.settings.setdefault("waveform_generator", {})
+        waveform_generator_settings["timing_profile"] = True
+        waveform_generator_settings["timing_profile_print_every"] = int(
+            args.transform_timing_print_every
+        )
+        if args.backend_native_fused is not None:
+            fused_flag = args.backend_native_fused.lower() == "true"
+            waveform_generator_settings["backend_native_fused"] = bool(fused_flag)
+            if hasattr(wfd, "waveform_generator"):
+                wfd.waveform_generator.backend_native_fused = bool(fused_flag)
+
+        train_loader, _, _ = initialize_stage(
+            pm,
+            wfd,
+            stage0,
+            local_settings["num_workers"],
+            resume=False,
+        )
 
     bbhx_transform = _find_bbhx_transform(train_loader)
     if bbhx_transform is None:
@@ -159,7 +209,8 @@ def main():
     else:
         bbhx_transform.reset_timing_stats()
 
-    pm.network.train()
+    if pm is not None:
+        pm.network.train()
     iterator = iter(train_loader)
 
     timings = {"data": 0.0, "transfer": 0.0, "network": 0.0}
@@ -176,10 +227,15 @@ def main():
         batch = _move_batch_to_device(batch, device)
         t2 = time.perf_counter()
 
-        pm.optimizer.zero_grad(set_to_none=True)
-        loss = pm.loss(batch[0], *batch[1:])
-        loss.backward()
-        pm.optimizer.step()
+        if pm is not None:
+            pm.optimizer.zero_grad(set_to_none=True)
+            loss = pm.loss(batch[0], *batch[1:])
+            loss.backward()
+            pm.optimizer.step()
+            loss_str = f"loss={loss.item():.4f} "
+        else:
+            # data_only mode: no model step, isolate generation/transform path.
+            loss_str = ""
         t3 = time.perf_counter()
 
         if step_idx >= args.warmup_steps:
@@ -191,7 +247,7 @@ def main():
         if (step_idx + 1) % args.print_every == 0:
             print(
                 f"step={step_idx + 1:5d} "
-                f"loss={loss.item():.4f} "
+                f"{loss_str}"
                 f"data={t1 - t0:.3f}s "
                 f"transfer={t2 - t1:.3f}s "
                 f"network={t3 - t2:.3f}s"
@@ -209,6 +265,7 @@ def main():
     samples_per_sec = batch_size / avg_total if avg_total > 0 else float("nan")
 
     print("\n=== Single-GPU Timing Summary ===")
+    print(f"profile_mode        : {args.profile_mode}")
     print(f"steps_measured      : {counted}")
     print(f"batch_size          : {batch_size}")
     print(f"avg_data            : {avg_data:.4f}s")
