@@ -102,6 +102,20 @@ def _find_bbhx_transform(loader):
     return None
 
 
+def _configure_generator_timing(wfd, print_every):
+    gen = getattr(wfd, "waveform_generator", None)
+    if gen is None:
+        return None
+    if hasattr(gen, "set_timing_profile"):
+        gen.set_timing_profile(True, print_every=int(print_every))
+    elif hasattr(gen, "timing_profile"):
+        gen.timing_profile = True
+        gen.timing_profile_print_every = int(print_every)
+    if hasattr(gen, "reset_timing_stats"):
+        gen.reset_timing_stats()
+    return gen
+
+
 def main():
     args = _parse_args()
 
@@ -157,6 +171,8 @@ def main():
             if hasattr(wfd, "waveform_generator"):
                 wfd.waveform_generator.backend_native_fused = bool(fused_flag)
 
+        gen = _configure_generator_timing(wfd, args.transform_timing_print_every)
+
         set_train_transforms(
             wfd,
             train_settings["data"],
@@ -194,6 +210,8 @@ def main():
             waveform_generator_settings["backend_native_fused"] = bool(fused_flag)
             if hasattr(wfd, "waveform_generator"):
                 wfd.waveform_generator.backend_native_fused = bool(fused_flag)
+
+        gen = _configure_generator_timing(wfd, args.transform_timing_print_every)
 
         train_loader, _, _ = initialize_stage(
             pm,
@@ -288,6 +306,33 @@ def main():
         if avg_data > 0:
             frac = 100.0 * stats["avg_total"] / avg_data
             print(f"transform/data pct  : {frac:.1f}%")
+
+    if gen is not None and hasattr(gen, "get_timing_stats"):
+        gstats = gen.get_timing_stats(reset=False)
+        print("\n=== BBHx Generator Internal Timing ===")
+        print(f"total_calls         : {gstats['total_calls']}")
+        print(f"direct_calls        : {gstats['direct_calls']}")
+        print(f"amp_calls           : {gstats['amp_calls']}")
+        if gstats["direct_calls"] > 0:
+            print("direct path avg per call:")
+            print(f"  freq_grid         : {gstats['avg_direct_freq_grid']:.6f}s")
+            print(f"  param_pick        : {gstats['avg_direct_param_pick']:.6f}s")
+            print(f"  batch_infer       : {gstats['avg_direct_batch_infer']:.6f}s")
+            print(f"  mass_from_mcq     : {gstats['avg_direct_mass_from_mcq']:.6f}s")
+            print(f"  scalar_pick       : {gstats['avg_direct_scalar_pick']:.6f}s")
+            print(f"  coerce            : {gstats['avg_direct_coerce']:.6f}s")
+            print(f"  t_ref_fix         : {gstats['avg_direct_t_ref_fix']:.6f}s")
+            print(f"  distance_convert  : {gstats['avg_direct_distance_convert']:.6f}s")
+            print(f"  waveform_call     : {gstats['avg_direct_waveform_call']:.6f}s")
+            print(f"  return_convert    : {gstats['avg_direct_return_convert']:.6f}s")
+            print(f"  total             : {gstats['avg_direct_total']:.6f}s")
+        if gstats["amp_calls"] > 0:
+            print("amp path avg per call:")
+            print(f"  parse_parameters  : {gstats['avg_amp_parse_parameters']:.6f}s")
+            print(f"  freq_grid         : {gstats['avg_amp_freq_grid']:.6f}s")
+            print(f"  waveform_call     : {gstats['avg_amp_waveform_call']:.6f}s")
+            print(f"  package           : {gstats['avg_amp_package']:.6f}s")
+            print(f"  total             : {gstats['avg_amp_total']:.6f}s")
 
 
 if __name__ == "__main__":

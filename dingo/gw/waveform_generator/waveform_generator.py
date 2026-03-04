@@ -1,6 +1,7 @@
 from functools import partial
 from multiprocessing import Pool
 from math import isclose
+import time
 
 import numpy as np
 import astropy.units as u
@@ -2004,10 +2005,13 @@ class BBHxWaveformGenerator:
         self.direct_response = bool(kwargs.get("direct_response", False))
         self.gpu_fastpath = bool(kwargs.get("gpu_fastpath", False))
         self.backend_native_fused = bool(kwargs.get("backend_native_fused", False))
+        self.timing_profile = bool(kwargs.get("timing_profile", False))
+        self.timing_profile_print_every = int(kwargs.get("timing_profile_print_every", 0))
         self.bbhx_length = int(kwargs.get("bbhx_length", 1024))
         self.orbits = None
         self._cached_output_freqs_cpu = None
         self._cached_output_freqs_backend = None
+        self.reset_timing_stats()
         
         # Initialize BBHx waveform generator
         try:
@@ -2054,6 +2058,87 @@ class BBHxWaveformGenerator:
     @staticmethod
     def _to_numpy(x):
         return x.get() if hasattr(x, "get") else np.asarray(x)
+
+    def set_timing_profile(self, enabled: bool, print_every: int = None):
+        self.timing_profile = bool(enabled)
+        if print_every is not None:
+            self.timing_profile_print_every = int(print_every)
+
+    def reset_timing_stats(self):
+        self._timing_count_total = 0
+        self._timing_count_direct = 0
+        self._timing_count_amp_phase = 0
+        self._timing_totals = {
+            "all_total": 0.0,
+            "direct_total": 0.0,
+            "direct_freq_grid": 0.0,
+            "direct_param_pick": 0.0,
+            "direct_batch_infer": 0.0,
+            "direct_mass_from_mcq": 0.0,
+            "direct_scalar_pick": 0.0,
+            "direct_coerce": 0.0,
+            "direct_t_ref_fix": 0.0,
+            "direct_distance_convert": 0.0,
+            "direct_waveform_call": 0.0,
+            "direct_return_convert": 0.0,
+            "amp_total": 0.0,
+            "amp_parse_parameters": 0.0,
+            "amp_freq_grid": 0.0,
+            "amp_waveform_call": 0.0,
+            "amp_package": 0.0,
+        }
+
+    def _timing_add(self, key: str, dt: float):
+        if self.timing_profile:
+            self._timing_totals[key] += dt
+
+    def _timing_finalize(self, path: str, total_dt: float):
+        if not self.timing_profile:
+            return
+        self._timing_count_total += 1
+        self._timing_totals["all_total"] += total_dt
+        if path == "direct":
+            self._timing_count_direct += 1
+            self._timing_totals["direct_total"] += total_dt
+        elif path == "amp":
+            self._timing_count_amp_phase += 1
+            self._timing_totals["amp_total"] += total_dt
+
+        if (
+            self.timing_profile_print_every > 0
+            and self._timing_count_total % self.timing_profile_print_every == 0
+        ):
+            stats = self.get_timing_stats()
+            if self._timing_count_direct > 0:
+                print(
+                    "[BBHxGenTiming] "
+                    f"n_direct={stats['direct_calls']} "
+                    f"direct_total={stats['avg_direct_total']:.4f}s "
+                    f"waveform_call={stats['avg_direct_waveform_call']:.4f}s "
+                    f"coerce={stats['avg_direct_coerce']:.4f}s"
+                )
+
+    def get_timing_stats(self, reset: bool = False):
+        out = {
+            "enabled": self.timing_profile,
+            "total_calls": int(self._timing_count_total),
+            "direct_calls": int(self._timing_count_direct),
+            "amp_calls": int(self._timing_count_amp_phase),
+        }
+        dcount = max(self._timing_count_direct, 1)
+        acount = max(self._timing_count_amp_phase, 1)
+        tcount = max(self._timing_count_total, 1)
+        for key, total in self._timing_totals.items():
+            out[f"total_{key}"] = float(total)
+            if key.startswith("direct_"):
+                out[f"avg_{key}"] = float(total) / dcount
+            elif key.startswith("amp_"):
+                out[f"avg_{key}"] = float(total) / acount
+            else:
+                out[f"avg_{key}"] = float(total) / tcount
+        if reset:
+            self.reset_timing_stats()
+        return out
 
     @staticmethod
     def _get_first(parameters: Dict[str, float], keys, default=None):
@@ -2219,16 +2304,26 @@ class BBHxWaveformGenerator:
         Backend-native fused direct-response path for BBHx GPU fast training.
         Avoids merged parameter dicts and extra Python bookkeeping in transforms.
         """
+        total_t0 = time.perf_counter() if self.timing_profile else None
+        t0 = time.perf_counter() if self.timing_profile else None
         freqs = self._get_cached_backend_frequency_grid()
+        if self.timing_profile:
+            self._timing_add("direct_freq_grid", time.perf_counter() - t0)
         try:
+            t0 = time.perf_counter() if self.timing_profile else None
             m1 = self._pick_value(extrinsic_parameters, intrinsic_parameters, ["mass_1", "m1"])
             m2 = self._pick_value(extrinsic_parameters, intrinsic_parameters, ["mass_2", "m2"])
             chirp_mass = self._pick_value(
                 extrinsic_parameters, intrinsic_parameters, ["chirp_mass", "Mchirp"]
             )
             q = self._pick_value(extrinsic_parameters, intrinsic_parameters, ["mass_ratio", "q"])
+            if self.timing_profile:
+                self._timing_add("direct_param_pick", time.perf_counter() - t0)
 
+            t0 = time.perf_counter() if self.timing_profile else None
             n = self._infer_batch_size(m1, m2, chirp_mass, q)
+            if self.timing_profile:
+                self._timing_add("direct_batch_infer", time.perf_counter() - t0)
 
             if m1 is None or m2 is None:
                 if chirp_mass is None or q is None:
@@ -2236,10 +2331,14 @@ class BBHxWaveformGenerator:
                         "BBHxWaveformGenerator requires either (mass_1, mass_2) or "
                         "(chirp_mass/Mchirp, mass_ratio/q)."
                     )
+                t0 = time.perf_counter() if self.timing_profile else None
                 chirp_arr = self._coerce_batch_value(chirp_mass, n, "chirp_mass")
                 q_arr = self._coerce_batch_value(q, n, "q")
                 m1, m2 = self._masses_from_chirp_mass_and_q(chirp_arr, q_arr)
+                if self.timing_profile:
+                    self._timing_add("direct_mass_from_mcq", time.perf_counter() - t0)
 
+            t0 = time.perf_counter() if self.timing_profile else None
             chi1z = self._pick_value(
                 extrinsic_parameters, intrinsic_parameters, ["chi_1z", "chi1z", "chi_1", "chi1"], 0.0
             )
@@ -2275,7 +2374,10 @@ class BBHxWaveformGenerator:
                 )
             else:
                 t_ref = 0.5 * YRSID_SI
+            if self.timing_profile:
+                self._timing_add("direct_scalar_pick", time.perf_counter() - t0)
 
+            t0 = time.perf_counter() if self.timing_profile else None
             m1 = self._coerce_batch_value(m1, n, "m1")
             m2 = self._coerce_batch_value(m2, n, "m2")
             chi1z = self._coerce_batch_value(chi1z, n, "chi1z")
@@ -2287,9 +2389,20 @@ class BBHxWaveformGenerator:
             beta = self._coerce_batch_value(beta, n, "beta")
             psi = self._coerce_batch_value(psi, n, "psi")
             t_ref = self._coerce_batch_value(t_ref, n, "t_ref")
-            t_ref = np.where(np.isclose(t_ref, 0.0, atol=1e-3), 0.5 * YRSID_SI, t_ref)
+            if self.timing_profile:
+                self._timing_add("direct_coerce", time.perf_counter() - t0)
 
+            t0 = time.perf_counter() if self.timing_profile else None
+            t_ref = np.where(np.isclose(t_ref, 0.0, atol=1e-3), 0.5 * YRSID_SI, t_ref)
+            if self.timing_profile:
+                self._timing_add("direct_t_ref_fix", time.perf_counter() - t0)
+
+            t0 = time.perf_counter() if self.timing_profile else None
             distance_si = distance_mpc * PC_SI * 1e6
+            if self.timing_profile:
+                self._timing_add("direct_distance_convert", time.perf_counter() - t0)
+
+            t0 = time.perf_counter() if self.timing_profile else None
             waveform_data = self.waveform_gen(
                 m1,
                 m2,
@@ -2310,9 +2423,20 @@ class BBHxWaveformGenerator:
                 squeeze=True,
                 length=self.bbhx_length,
             )
+            if self.timing_profile:
+                self._timing_add("direct_waveform_call", time.perf_counter() - t0)
+
+            t0 = time.perf_counter() if self.timing_profile else None
             if self.use_gpu:
+                if self.timing_profile:
+                    self._timing_add("direct_return_convert", time.perf_counter() - t0)
+                    self._timing_finalize("direct", time.perf_counter() - total_t0)
                 return waveform_data
-            return self._to_numpy(waveform_data)
+            out = self._to_numpy(waveform_data)
+            if self.timing_profile:
+                self._timing_add("direct_return_convert", time.perf_counter() - t0)
+                self._timing_finalize("direct", time.perf_counter() - total_t0)
+            return out
         except Exception:
             if not catch_waveform_errors:
                 raise
@@ -2357,6 +2481,7 @@ class BBHxWaveformGenerator:
         wf_dict: Dict
             Dictionary of waveform data with frequency-dependent amplitudes and phases
         """
+        total_t0 = time.perf_counter() if self.timing_profile else None
         try:
             parameters = parameters.copy()
             
@@ -2366,7 +2491,10 @@ class BBHxWaveformGenerator:
                     parameters, t0=0., frozenLISA=True
                 )
             
+            t0 = time.perf_counter() if self.timing_profile else None
             parsed = self._parse_parameters(parameters)
+            if self.timing_profile:
+                self._timing_add("amp_parse_parameters", time.perf_counter() - t0)
             m1 = parsed["m1"]
             m2 = parsed["m2"]
             chi1z = parsed["chi1z"]
@@ -2380,9 +2508,13 @@ class BBHxWaveformGenerator:
             t_ref = parsed["t_ref"]
             
             # Interpolate BBHx output onto the Dingo domain grid.
+            t0 = time.perf_counter() if self.timing_profile else None
             freqs = self._get_cached_backend_frequency_grid()
+            if self.timing_profile:
+                self._timing_add("amp_freq_grid", time.perf_counter() - t0)
             
             # Generate waveform using BBHx
+            t0 = time.perf_counter() if self.timing_profile else None
             waveform_data = self.waveform_gen(
                 m1, m2, chi1z, chi2z,
                 distance_si,
@@ -2396,9 +2528,12 @@ class BBHxWaveformGenerator:
                 squeeze=True,
                 length=self.bbhx_length
             )
+            if self.timing_profile:
+                self._timing_add("amp_waveform_call", time.perf_counter() - t0)
             
             # Package waveform data. Keep all returned channels (A/E/T) rather than
             # indexing a single channel.
+            t0 = time.perf_counter() if self.timing_profile else None
             if self.direct_response and self.gpu_fastpath:
                 # Keep backend array type (e.g., CuPy) for CUDA fast-path transforms.
                 waveform_payload = waveform_data
@@ -2420,6 +2555,9 @@ class BBHxWaveformGenerator:
                     "phase": np.angle(waveform_payload),
                     "freqs": freqs,
                 }
+            if self.timing_profile:
+                self._timing_add("amp_package", time.perf_counter() - t0)
+                self._timing_finalize("amp", time.perf_counter() - total_t0)
             
             return wf_dict
             
