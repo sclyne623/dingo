@@ -108,8 +108,12 @@ def set_train_transforms(wfd, data_settings, asd_dataset_path, omit_transforms=N
     #  set_train_transforms function is called multiple times, since the second time
     #  the domain_update = wfd.domain.domain_dict contains a window factor, which will
     #  cause an error in domain_update.
-    domain = build_domain(wfd.domain.domain_dict)
-    domain.window_factor = get_window_factor(data_settings["window"])
+    try:
+        domain = build_domain(wfd.domain.domain_dict)
+        domain.window_factor = get_window_factor(data_settings["window"])
+    except:
+        domain = copy.deepcopy(wfd.domain)
+        domain.window_factor = get_window_factor(data_settings["window"])
 
     extrinsic_prior_dict = get_extrinsic_prior_dict(data_settings["extrinsic_prior"])
     if data_settings["inference_parameters"] == "default":
