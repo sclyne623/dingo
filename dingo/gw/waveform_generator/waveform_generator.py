@@ -2203,7 +2203,9 @@ class BBHxWaveformGenerator:
         beta = self._get_first(parameters, ["dec", "beta"], 0.0)
         psi = self._get_first(parameters, ["psi"], 0.0)
 
-        # BBHx expects t_ref in seconds (SSB frame), matching the tutorial.
+        # BBHx expects t_ref in seconds (SSB frame). When the caller explicitly
+        # provides a time parameter, preserve it exactly so fixed-time training
+        # conventions like geocent_time = 0 remain aligned with LISABeta.
         if "t_ref" in parameters:
             t_ref = parameters["t_ref"]
         elif "t_ref_years" in parameters:
@@ -2212,12 +2214,6 @@ class BBHxWaveformGenerator:
             t_ref = parameters["geocent_time"]
         else:
             t_ref = 0.5 * YRSID_SI
-        if np.isscalar(t_ref):
-            if np.isclose(t_ref, 0.0, atol=1e-3):
-                t_ref = 0.5 * YRSID_SI
-        else:
-            t_ref = np.asarray(t_ref, dtype=np.float64)
-            t_ref = np.where(np.isclose(t_ref, 0.0, atol=1e-3), 0.5 * YRSID_SI, t_ref)
 
         m1_arr = np.asarray(m1, dtype=np.float64)
         n = m1_arr.size if m1_arr.ndim > 0 else 1
@@ -2391,11 +2387,6 @@ class BBHxWaveformGenerator:
             t_ref = self._coerce_batch_value(t_ref, n, "t_ref")
             if self.timing_profile:
                 self._timing_add("direct_coerce", time.perf_counter() - t0)
-
-            t0 = time.perf_counter() if self.timing_profile else None
-            t_ref = np.where(np.isclose(t_ref, 0.0, atol=1e-3), 0.5 * YRSID_SI, t_ref)
-            if self.timing_profile:
-                self._timing_add("direct_t_ref_fix", time.perf_counter() - t0)
 
             t0 = time.perf_counter() if self.timing_profile else None
             distance_si = distance_mpc * PC_SI * 1e6
