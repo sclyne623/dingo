@@ -2597,13 +2597,11 @@ class BBHxWaveformGenerator:
         distance_si = parsed["distance_mpc"] * PC_SI * 1e6
         t_ref = parsed["t_ref"]
 
-        # Keep frequency handling consistent with generate_amp_phase().
+        # Match the LISABeta path: generate mode data on a coarse grid here, then let
+        # ProjectOntoSpaceDetectors interpolate onto the full domain frequencies.
         freqs = self._build_bbhx_frequency_grid()
         if self.use_gpu:
             freqs = self.waveform_gen.xp.asarray(freqs)
-
-        # Use BBHx intrinsic amp/phase/tf generator directly. This keeps detector
-        # response application in Dingo transforms (same approach as LISABeta path).
         phi_ref_amp_phase = np.zeros_like(np.atleast_1d(m1), dtype=float)
         self.waveform_gen.amp_phase_gen(
             m1,
