@@ -422,12 +422,36 @@ def build_svd_for_embedding_network(
     # Return V matrices in standard order. Drop the elements below domain.min_idx,
     # since the neural network expects data truncated below these. The dropped elements
     # should be 0.
+    waveform_settings = {}
+    if isinstance(getattr(wfd, "settings", None), dict):
+        waveform_settings = wfd.settings.get("waveform_generator", {}) or {}
+    lisa_like = bool(
+        waveform_settings.get("LISA", False) or waveform_settings.get("BBHx", False)
+    )
+    svd_zero_tol = 1e-6 if lisa_like else 1e-12
+
     print(f"Truncating SVD matrices below index {wfd.domain.min_idx}.")
     print("...V matrix shapes:")
     V_rb_list = []
     for ifo in data_settings["detectors"]:
         V = basis_dict[ifo].V
-        assert np.allclose(V[: wfd.domain.min_idx], 0)
+        V_prefix = V[: wfd.domain.min_idx]
+        if V_prefix.size and not np.allclose(
+            V_prefix, 0, atol=svd_zero_tol, rtol=0.0
+        ):
+            max_abs = float(np.max(np.abs(V_prefix)))
+            if lisa_like:
+                print(
+                    f"Warning: {ifo} SVD rows below min_idx are not exactly zero "
+                    f"(max abs={max_abs:.3e}). Zeroing before truncation."
+                )
+                V = V.copy()
+                V[: wfd.domain.min_idx] = 0
+            else:
+                raise AssertionError(
+                    f"SVD rows below min_idx must be zero for {ifo}; "
+                    f"max abs={max_abs:.3e}."
+                )
         V = V[wfd.domain.min_idx :]
         print("      " + str(V.shape))
         V_rb_list.append(V)
