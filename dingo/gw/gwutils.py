@@ -107,7 +107,16 @@ def get_standardization_dict(
     # them numerically.
     ext_prior = BBHExtrinsicPriorDict(extrinsic_prior_dict)
     mean_extrinsic, std_extrinsic = ext_prior.mean_std(ext_prior.keys())
-    EPSILON = 1e-12
+    # LISA/BBHx parameter tables can show tiny floating-point spread for values that
+    # are effectively fixed (for example, geocent_time around large absolute epochs).
+    # Use a slightly looser tolerance only for LISA-like training data.
+    waveform_settings = {}
+    if isinstance(getattr(wfd, "settings", None), dict):
+        waveform_settings = wfd.settings.get("waveform_generator", {}) or {}
+    lisa_like = bool(
+        waveform_settings.get("LISA", False) or waveform_settings.get("BBHx", False)
+    )
+    EPSILON = 1e-6 if lisa_like else 1e-12
     # Check that overlap between intrinsic and extrinsic parameters is only
     # due to fiducial values (-> std 0)
     for k in std_intrinsic.keys() & std_extrinsic.keys():
