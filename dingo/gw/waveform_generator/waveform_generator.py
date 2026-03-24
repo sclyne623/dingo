@@ -1982,6 +1982,11 @@ class BBHxWaveformGenerator:
             Whether to keep detector arms fixed. Default is False.
         use_gpu : bool, optional
             Whether to use GPU acceleration. Default is False.
+        kwargs : dict, optional
+            Optional BBHx settings. Supported keys include:
+            - default_t_ref_seconds: fallback BBHx reference time in seconds.
+            - default_t_ref_years: fallback BBHx reference time in sidereal years
+              (used only if default_t_ref_seconds is not provided).
         """
         if not isinstance(approximant, str):
             raise ValueError("approximant should be a string, but got", approximant)
@@ -2008,6 +2013,11 @@ class BBHxWaveformGenerator:
         self.timing_profile = bool(kwargs.get("timing_profile", False))
         self.timing_profile_print_every = int(kwargs.get("timing_profile_print_every", 0))
         self.bbhx_length = int(kwargs.get("bbhx_length", 1024))
+        default_t_ref_seconds = kwargs.get("default_t_ref_seconds", None)
+        if default_t_ref_seconds is None:
+            default_t_ref_years = float(kwargs.get("default_t_ref_years", 1.0))
+            default_t_ref_seconds = default_t_ref_years * YRSID_SI
+        self.default_t_ref_seconds = float(default_t_ref_seconds)
         self.orbits = None
         self._cached_output_freqs_cpu = None
         self._cached_output_freqs_backend = None
@@ -2204,8 +2214,7 @@ class BBHxWaveformGenerator:
         psi = self._get_first(parameters, ["psi"], 0.0)
 
         # BBHx expects t_ref in seconds (SSB frame). When the caller explicitly
-        # provides a time parameter, preserve it exactly so fixed-time training
-        # conventions like geocent_time = 0 remain aligned with LISABeta.
+        # provides a time parameter, preserve it exactly.
         if "t_ref" in parameters:
             t_ref = parameters["t_ref"]
         elif "t_ref_years" in parameters:
@@ -2213,7 +2222,7 @@ class BBHxWaveformGenerator:
         elif "geocent_time" in parameters:
             t_ref = parameters["geocent_time"]
         else:
-            t_ref = 0.5 * YRSID_SI
+            t_ref = self.default_t_ref_seconds
 
         m1_arr = np.asarray(m1, dtype=np.float64)
         n = m1_arr.size if m1_arr.ndim > 0 else 1
@@ -2369,7 +2378,7 @@ class BBHxWaveformGenerator:
                     extrinsic_parameters, intrinsic_parameters, ["geocent_time"]
                 )
             else:
-                t_ref = 0.5 * YRSID_SI
+                t_ref = self.default_t_ref_seconds
             if self.timing_profile:
                 self._timing_add("direct_scalar_pick", time.perf_counter() - t0)
 
