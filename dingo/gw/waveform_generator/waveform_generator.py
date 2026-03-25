@@ -2013,6 +2013,10 @@ class BBHxWaveformGenerator:
         self.timing_profile = bool(kwargs.get("timing_profile", False))
         self.timing_profile_print_every = int(kwargs.get("timing_profile_print_every", 0))
         self.bbhx_length = int(kwargs.get("bbhx_length", 1024))
+        # BBHx waveform window in years (LISA frame), passed through to BBHWaveformFD.
+        # Keep BBHx defaults unless explicitly overridden.
+        self.bbhx_t_obs_start_years = float(kwargs.get("bbhx_t_obs_start_years", 0.0))
+        self.bbhx_t_obs_end_years = float(kwargs.get("bbhx_t_obs_end_years", 1.0))
         default_t_ref_seconds = kwargs.get("default_t_ref_seconds", None)
         if default_t_ref_seconds is None:
             default_t_ref_years = float(kwargs.get("default_t_ref_years", 1.0))
@@ -2418,6 +2422,8 @@ class BBHxWaveformGenerator:
                 beta,
                 psi,
                 t_ref,
+                t_obs_start=self.bbhx_t_obs_start_years,
+                t_obs_end=self.bbhx_t_obs_end_years,
                 freqs=freqs,
                 modes=self.mode_list,
                 direct=False,
@@ -2523,6 +2529,8 @@ class BBHxWaveformGenerator:
                 phase, self.f_ref,
                 inc, lam, beta, psi,
                 t_ref,
+                t_obs_start=self.bbhx_t_obs_start_years,
+                t_obs_end=self.bbhx_t_obs_end_years,
                 freqs=freqs,
                 modes=self.mode_list,
                 direct=False,
