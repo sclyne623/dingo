@@ -9,6 +9,7 @@ import textwrap
 import time
 from copy import deepcopy
 import torch
+import torch.distributed as dist
 import torch.multiprocessing as mp
 
 from threadpoolctl import threadpool_limits
