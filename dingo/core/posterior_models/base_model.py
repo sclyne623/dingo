@@ -542,15 +542,22 @@ def train_epoch(pm, dataloader, print_freq: int = 1):
         return bool(getattr(ds, "output_on_cuda", False))
 
     def _iter_with_background_prefetch(loader):
+        cuda_device = pm.device if pm.device.type == "cuda" else None
+
+        def _next_on_device(it):
+            if cuda_device is not None:
+                torch.cuda.set_device(cuda_device)
+            return next(it)
+
         iterator = iter(loader)
         with ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(next, iterator)
+            future = executor.submit(_next_on_device, iterator)
             while True:
                 try:
                     batch = future.result()
                 except StopIteration:
                     break
-                future = executor.submit(next, iterator)
+                future = executor.submit(_next_on_device, iterator)
                 yield batch
 
     def _to_device_if_needed(x):
