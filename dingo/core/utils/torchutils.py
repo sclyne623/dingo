@@ -1,5 +1,6 @@
 import os
 from socket import gethostname
+from datetime import timedelta
 import numpy as np
 import torch
 import torch.nn as nn
@@ -55,7 +56,12 @@ def set_seed_based_on_rank(rank: int) -> None:
     np.random.seed((base_seed % (2**32 - 1)) + rank)
 
 
-def setup_ddp(rank: int, world_size: int, port: int = 12355) -> None:
+def setup_ddp(
+    rank: int,
+    world_size: int,
+    port: int = 12355,
+    timeout_s: float = 600.0,
+) -> None:
     """
     Initialize NCCL process group.
     If launched via torchrun/srun env, honor existing MASTER_* values.
@@ -64,7 +70,12 @@ def setup_ddp(rank: int, world_size: int, port: int = 12355) -> None:
     os.environ.setdefault("MASTER_PORT", str(port))
     if not dist.is_nccl_available():
         raise RuntimeError("NCCL backend unavailable; cannot run DDP on CUDA.")
-    dist.init_process_group(backend="nccl", rank=rank, world_size=world_size)
+    dist.init_process_group(
+        backend="nccl",
+        rank=rank,
+        world_size=world_size,
+        timeout=timedelta(seconds=float(timeout_s)),
+    )
     torch.cuda.set_device(rank)
 
 

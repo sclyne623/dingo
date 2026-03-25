@@ -201,8 +201,16 @@ def _run_training_ddp_worker(
     results,
 ):
     port = int(local_settings.get("distributed", {}).get("port", 12355))
+    ddp_timeout_raw = local_settings.get("distributed", {}).get(
+        "ddp_timeout_s",
+        local_settings.get("distributed", {}).get(
+            "svd_wait_timeout_s",
+            local_settings.get("svd_wait_timeout_s", 7200),
+        ),
+    )
+    ddp_timeout_s = float(ddp_timeout_raw)
     try:
-        setup_ddp(rank, world_size, port=port)
+        setup_ddp(rank, world_size, port=port, timeout_s=ddp_timeout_s)
         set_seed_based_on_rank(rank)
 
         local_settings_rank = deepcopy(local_settings)
@@ -255,6 +263,12 @@ def _run_training_ddp_worker(
             pm, wfd = prepare_training_resume(
                 checkpoint_name, local_settings_rank, train_dir
             )
+
+        # Keep ranks in lockstep before any DDP collectives. This avoids one rank
+        # timing out in communicator setup while another is still finishing
+        # expensive preparation (e.g., SVD initialization).
+        if dist.is_available() and dist.is_initialized():
+            dist.barrier()
 
         pm.network = replace_BatchNorm_with_SyncBatchNorm(pm.network)
         find_unused_parameters = bool(
