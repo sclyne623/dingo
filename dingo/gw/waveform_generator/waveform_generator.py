@@ -2199,7 +2199,9 @@ class BBHxWaveformGenerator:
 
         distance_mpc = self._get_first(
             parameters,
-            ["luminosity_distance", "dist", "redshift_distance"],
+            # Prefer LISA naming first to avoid default bilby aliases silently
+            # overriding explicitly provided LISA extrinsics.
+            ["dist", "luminosity_distance", "redshift_distance"],
             None,
         )
         if distance_mpc is None:
@@ -2209,8 +2211,8 @@ class BBHxWaveformGenerator:
 
         inc = self._get_first(parameters, ["theta_jn", "inc"], 0.0)
         phase = self._get_first(parameters, ["phase", "phi"], 0.0)
-        lam = self._get_first(parameters, ["ra", "lambda", "lambd"], 0.0)
-        beta = self._get_first(parameters, ["dec", "beta"], 0.0)
+        lam = self._get_first(parameters, ["lambda", "ra", "lambd"], 0.0)
+        beta = self._get_first(parameters, ["beta", "dec"], 0.0)
         psi = self._get_first(parameters, ["psi"], 0.0)
 
         # BBHx expects t_ref in seconds (SSB frame). When the caller explicitly
@@ -2353,7 +2355,7 @@ class BBHxWaveformGenerator:
             distance_mpc = self._pick_value(
                 extrinsic_parameters,
                 intrinsic_parameters,
-                ["luminosity_distance", "dist", "redshift_distance"],
+                ["dist", "luminosity_distance", "redshift_distance"],
                 None,
             )
             if distance_mpc is None:
@@ -2362,8 +2364,8 @@ class BBHxWaveformGenerator:
                 )
             inc = self._pick_value(extrinsic_parameters, intrinsic_parameters, ["theta_jn", "inc"], 0.0)
             phase = self._pick_value(extrinsic_parameters, intrinsic_parameters, ["phase", "phi"], 0.0)
-            lam = self._pick_value(extrinsic_parameters, intrinsic_parameters, ["ra", "lambda", "lambd"], 0.0)
-            beta = self._pick_value(extrinsic_parameters, intrinsic_parameters, ["dec", "beta"], 0.0)
+            lam = self._pick_value(extrinsic_parameters, intrinsic_parameters, ["lambda", "ra", "lambd"], 0.0)
+            beta = self._pick_value(extrinsic_parameters, intrinsic_parameters, ["beta", "dec"], 0.0)
             psi = self._pick_value(extrinsic_parameters, intrinsic_parameters, ["psi"], 0.0)
 
             if "t_ref" in extrinsic_parameters or "t_ref" in intrinsic_parameters:
