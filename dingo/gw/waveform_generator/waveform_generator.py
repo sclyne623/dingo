@@ -2568,9 +2568,20 @@ class BBHxWaveformGenerator:
                 # f_ISCO = 4400 Hz / M_total (Schwarzschild, 22-mode GW frequency).
                 f_isco = 4400.0 / (parsed["m1"] + parsed["m2"])
                 freq_arr = np.asarray(freqs)
-                # waveform_payload: (n_freqs, 3) — zero all bins above f_ISCO
+                n_f = len(freq_arr)
                 waveform_payload = waveform_payload.copy()
-                waveform_payload[freq_arr > f_isco, :] = 0.0
+                # Locate the frequency axis (shape varies by BBHx version/path).
+                freq_axis = next(
+                    (i for i, s in enumerate(waveform_payload.shape) if s == n_f), None
+                )
+                if freq_axis is None:
+                    raise ValueError(
+                        f"isco_cutoff: cannot find frequency axis; "
+                        f"waveform shape {waveform_payload.shape}, n_freqs={n_f}"
+                    )
+                idx = [slice(None)] * waveform_payload.ndim
+                idx[freq_axis] = freq_arr > f_isco
+                waveform_payload[tuple(idx)] = 0.0
 
             if self.direct_response:
                 # Training direct-response path consumes detector-frame waveform only.
