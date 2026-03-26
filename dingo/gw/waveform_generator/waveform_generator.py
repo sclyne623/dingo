@@ -2568,9 +2568,9 @@ class BBHxWaveformGenerator:
                 # f_ISCO = 4400 Hz / M_total (Schwarzschild, 22-mode GW frequency).
                 f_isco = 4400.0 / (parsed["m1"] + parsed["m2"])
                 freq_arr = np.asarray(freqs)
-                # waveform_payload: (3, n_freqs) — zero all bins above f_ISCO
+                # waveform_payload: (n_freqs, 3) — zero all bins above f_ISCO
                 waveform_payload = waveform_payload.copy()
-                waveform_payload[:, freq_arr > f_isco] = 0.0
+                waveform_payload[freq_arr > f_isco, :] = 0.0
 
             if self.direct_response:
                 # Training direct-response path consumes detector-frame waveform only.
