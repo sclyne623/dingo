@@ -610,12 +610,7 @@ def train_epoch(
         else _plain_iter_with_events(dataloader)
     )
 
-    # High-priority stream: training/NCCL gets GPU scheduling priority over BBHx generation
-    if pm.device.type == "cuda":
-        _lo_pri, _hi_pri = torch.cuda.Stream.priority_range()
-        _train_stream = torch.cuda.Stream(device=pm.device, priority=_hi_pri)
-    else:
-        _train_stream = None
+    _train_stream = None  # use default stream; priority isolation hurt BBHx more than it helped
 
     scaler = GradScaler("cuda") if automatic_mixed_precision else None
 
@@ -715,12 +710,7 @@ def test_epoch(pm, dataloader, print_freq: int = 1):
             else _plain_iter_with_events(dataloader)
         )
 
-        # High-priority stream: training gets GPU scheduling priority over BBHx generation
-        if pm.device.type == "cuda":
-            _lo_pri, _hi_pri = torch.cuda.Stream.priority_range()
-            _train_stream = torch.cuda.Stream(device=pm.device, priority=_hi_pri)
-        else:
-            _train_stream = None
+        _train_stream = None  # use default stream; priority isolation hurt BBHx more than it helped
 
         for batch_idx, (data, prefetch_event) in enumerate(data_iter):
             loss_info.update_timer()
