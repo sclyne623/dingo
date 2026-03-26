@@ -2576,7 +2576,7 @@ class BBHxWaveformGenerator:
                     )
                 keep_shape = [1] * waveform_data.ndim
                 keep_shape[freq_axis] = n_f
-                keep = (freq_arr <= f_isco).reshape(keep_shape)
+                keep = (freq_arr <= float(f_isco)).reshape(keep_shape)
                 waveform_data = waveform_data * keep
 
             if self.direct_response and self.gpu_fastpath:
