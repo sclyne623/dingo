@@ -2567,7 +2567,7 @@ class BBHxWaveformGenerator:
                 # Apply per-source ISCO frequency mask (single waveform path).
                 # f_ISCO = 4400 Hz / M_total (Schwarzschild, 22-mode GW frequency).
                 f_isco = 4400.0 / (parsed["m1"] + parsed["m2"])
-                freq_arr = np.asarray(freqs)
+                freq_arr = freqs.get() if hasattr(freqs, 'get') else np.asarray(freqs)
                 n_f = len(freq_arr)
                 waveform_payload = waveform_payload.copy()
                 # Locate the frequency axis (shape varies by BBHx version/path).
