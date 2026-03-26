@@ -26,6 +26,16 @@ from dingo.core.utils.misc import get_version
 
 from dingo.core.utils.trainutils import EarlyStopping
 
+try:
+    from torch.amp import GradScaler, autocast
+except ImportError:
+    # PyTorch < 2.3 fallback
+    from torch.cuda.amp import GradScaler as _CudaGradScaler, autocast
+
+    class GradScaler:  # type: ignore[no-redef]
+        def __new__(cls, device="cuda", **kwargs):
+            return _CudaGradScaler(**kwargs)
+
 
 class BasePosteriorModel(ABC):
     """
@@ -384,6 +394,8 @@ class BasePosteriorModel(ABC):
         early_stopping: Optional[EarlyStopping] = None,
         train_print_freq: int = 50,
         test_print_freq: int = 50,
+        gradient_updates_per_optimizer_step: int = 1,
+        automatic_mixed_precision: bool = False,
     ):
         """
 
@@ -434,6 +446,8 @@ class BasePosteriorModel(ABC):
                     self,
                     train_loader,
                     print_freq=max(1, int(train_print_freq)) if is_primary else 0,
+                    gradient_updates_per_optimizer_step=gradient_updates_per_optimizer_step,
+                    automatic_mixed_precision=automatic_mixed_precision,
                 )
                 if dist.is_available() and dist.is_initialized():
                     t = torch.tensor(train_loss, device=self.device, dtype=torch.float64)
@@ -525,7 +539,13 @@ class BasePosteriorModel(ABC):
                     print(f"Finished training epoch {self.epoch}.\n")
 
 
-def train_epoch(pm, dataloader, print_freq: int = 1):
+def train_epoch(
+    pm,
+    dataloader,
+    print_freq: int = 1,
+    gradient_updates_per_optimizer_step: int = 1,
+    automatic_mixed_precision: bool = False,
+):
     pm.network.train()
     loss_info = dingo.core.utils.trainutils.LossInfo(
         pm.epoch,
@@ -597,19 +617,32 @@ def train_epoch(pm, dataloader, print_freq: int = 1):
     else:
         _train_stream = None
 
+    scaler = GradScaler("cuda") if automatic_mixed_precision else None
+
     for batch_idx, (data, prefetch_event) in enumerate(data_iter):
         loss_info.update_timer()
         with (torch.cuda.stream(_train_stream) if _train_stream else contextlib.nullcontext()):
             if prefetch_event is not None:
                 torch.cuda.current_stream().wait_event(prefetch_event)
-            pm.optimizer.zero_grad()
+            if batch_idx % gradient_updates_per_optimizer_step == 0:
+                pm.optimizer.zero_grad(set_to_none=True)
             # data to device
             data = [_to_device_if_needed(d) for d in data]
             # compute loss
-            loss = pm.loss(data[0], *data[1:])
-            # backward pass and optimizer step
-            loss.backward()
-            pm.optimizer.step()
+            if automatic_mixed_precision:
+                with autocast("cuda"):
+                    loss = pm.loss(data[0], *data[1:])
+                scaler.scale(loss).backward()
+            else:
+                loss = pm.loss(data[0], *data[1:])
+                loss.backward()
+            # optimizer step every N batches
+            if (batch_idx + 1) % gradient_updates_per_optimizer_step == 0:
+                if automatic_mixed_precision:
+                    scaler.step(pm.optimizer)
+                    scaler.update()
+                else:
+                    pm.optimizer.step()
         # update loss for history and logging
         loss_info.update(loss.detach().item(), len(data[0]))
         loss_info.print_info(batch_idx)
