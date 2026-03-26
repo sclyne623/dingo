@@ -2557,31 +2557,33 @@ class BBHxWaveformGenerator:
             # Package waveform data. Keep all returned channels (A/E/T) rather than
             # indexing a single channel.
             t0 = time.perf_counter() if self.timing_profile else None
+
+            if self.isco_cutoff:
+                # Apply per-source ISCO frequency mask on the GPU (before numpy
+                # conversion). f_ISCO = 4400 Hz / M_total (Schwarzschild, 22-mode).
+                xp = self.waveform_gen.xp
+                f_isco = 4400.0 / (parsed["m1"] + parsed["m2"])
+                freq_arr = freqs if hasattr(freqs, 'shape') else xp.asarray(freqs)
+                n_f = len(freq_arr)
+                # Locate the frequency axis (shape varies by BBHx version/path).
+                freq_axis = next(
+                    (i for i, s in enumerate(waveform_data.shape) if s == n_f), None
+                )
+                if freq_axis is None:
+                    raise ValueError(
+                        f"isco_cutoff: cannot find frequency axis; "
+                        f"waveform shape {waveform_data.shape}, n_freqs={n_f}"
+                    )
+                keep_shape = [1] * waveform_data.ndim
+                keep_shape[freq_axis] = n_f
+                keep = (freq_arr <= f_isco).reshape(keep_shape)
+                waveform_data = waveform_data * keep
+
             if self.direct_response and self.gpu_fastpath:
                 # Keep backend array type (e.g., CuPy) for CUDA fast-path transforms.
                 waveform_payload = waveform_data
             else:
                 waveform_payload = self._to_numpy(waveform_data)
-
-            if self.isco_cutoff:
-                # Apply per-source ISCO frequency mask (single waveform path).
-                # f_ISCO = 4400 Hz / M_total (Schwarzschild, 22-mode GW frequency).
-                f_isco = 4400.0 / (parsed["m1"] + parsed["m2"])
-                freq_arr = freqs.get() if hasattr(freqs, 'get') else np.asarray(freqs)
-                n_f = len(freq_arr)
-                waveform_payload = waveform_payload.copy()
-                # Locate the frequency axis (shape varies by BBHx version/path).
-                freq_axis = next(
-                    (i for i, s in enumerate(waveform_payload.shape) if s == n_f), None
-                )
-                if freq_axis is None:
-                    raise ValueError(
-                        f"isco_cutoff: cannot find frequency axis; "
-                        f"waveform shape {waveform_payload.shape}, n_freqs={n_f}"
-                    )
-                idx = [slice(None)] * waveform_payload.ndim
-                idx[freq_axis] = freq_arr > f_isco
-                waveform_payload[tuple(idx)] = 0.0
 
             if self.direct_response:
                 # Training direct-response path consumes detector-frame waveform only.
@@ -2591,7 +2593,6 @@ class BBHxWaveformGenerator:
                     "freqs": freqs,
                 }
             else:
-                waveform_payload = self._to_numpy(waveform_data)
                 wf_dict = {
                     "waveform": waveform_payload,
                     "amp": np.abs(waveform_payload),
