@@ -70,13 +70,14 @@ def setup_ddp(
     os.environ.setdefault("MASTER_PORT", str(port))
     if not dist.is_nccl_available():
         raise RuntimeError("NCCL backend unavailable; cannot run DDP on CUDA.")
+    torch.cuda.set_device(rank)
     dist.init_process_group(
         backend="nccl",
         rank=rank,
         world_size=world_size,
         timeout=timedelta(seconds=float(timeout_s)),
+        device_id=torch.device("cuda", rank),
     )
-    torch.cuda.set_device(rank)
 
 
 def cleanup_ddp() -> None:
