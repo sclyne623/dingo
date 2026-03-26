@@ -27,14 +27,9 @@ from dingo.core.utils.misc import get_version
 from dingo.core.utils.trainutils import EarlyStopping
 
 try:
-    from torch.amp import GradScaler, autocast
+    from torch.amp import autocast
 except ImportError:
-    # PyTorch < 2.3 fallback
-    from torch.cuda.amp import GradScaler as _CudaGradScaler, autocast
-
-    class GradScaler:  # type: ignore[no-redef]
-        def __new__(cls, device="cuda", **kwargs):
-            return _CudaGradScaler(**kwargs)
+    from torch.cuda.amp import autocast
 
 
 class BasePosteriorModel(ABC):
@@ -612,8 +607,6 @@ def train_epoch(
 
     _train_stream = None  # use default stream; priority isolation hurt BBHx more than it helped
 
-    scaler = GradScaler("cuda") if automatic_mixed_precision else None
-
     for batch_idx, (data, prefetch_event) in enumerate(data_iter):
         loss_info.update_timer()
         with (torch.cuda.stream(_train_stream) if _train_stream else contextlib.nullcontext()):
@@ -623,21 +616,16 @@ def train_epoch(
                 pm.optimizer.zero_grad(set_to_none=True)
             # data to device
             data = [_to_device_if_needed(d) for d in data]
-            # compute loss
+            # compute loss (BF16 autocast if requested; no GradScaler needed for BF16)
             if automatic_mixed_precision:
-                with autocast("cuda"):
+                with autocast("cuda", dtype=torch.bfloat16):
                     loss = pm.loss(data[0], *data[1:])
-                scaler.scale(loss).backward()
             else:
                 loss = pm.loss(data[0], *data[1:])
-                loss.backward()
+            loss.backward()
             # optimizer step every N batches
             if (batch_idx + 1) % gradient_updates_per_optimizer_step == 0:
-                if automatic_mixed_precision:
-                    scaler.step(pm.optimizer)
-                    scaler.update()
-                else:
-                    pm.optimizer.step()
+                pm.optimizer.step()
         # update loss for history and logging
         loss_info.update(loss.detach().item(), len(data[0]))
         loss_info.print_info(batch_idx)
