@@ -4,6 +4,7 @@ as well as functions for training and testing across an epoch.
 """
 
 from abc import abstractmethod, ABC
+import contextlib
 import os
 from os.path import join
 import h5py
@@ -547,18 +548,27 @@ def train_epoch(pm, dataloader, print_freq: int = 1):
         def _next_on_device(it):
             if cuda_device is not None:
                 torch.cuda.set_device(cuda_device)
-            return next(it)
+            batch = next(it)
+            event = None
+            if cuda_device is not None:
+                event = torch.cuda.Event()
+                event.record()  # records on bg thread's stream (after DLPack sync)
+            return batch, event
 
         iterator = iter(loader)
         with ThreadPoolExecutor(max_workers=1) as executor:
             future = executor.submit(_next_on_device, iterator)
             while True:
                 try:
-                    batch = future.result()
+                    batch, event = future.result()
                 except StopIteration:
                     break
                 future = executor.submit(_next_on_device, iterator)
-                yield batch
+                yield batch, event
+
+    def _plain_iter_with_events(loader):
+        for batch in loader:
+            yield batch, None
 
     def _to_device_if_needed(x):
         if isinstance(x, torch.Tensor):
@@ -577,19 +587,29 @@ def train_epoch(pm, dataloader, print_freq: int = 1):
     data_iter = (
         _iter_with_background_prefetch(dataloader)
         if use_cuda_batch_prefetch
-        else dataloader
+        else _plain_iter_with_events(dataloader)
     )
 
-    for batch_idx, data in enumerate(data_iter):
+    # High-priority stream: training/NCCL gets GPU scheduling priority over BBHx generation
+    if pm.device.type == "cuda":
+        _lo_pri, _hi_pri = torch.cuda.Stream.priority_range()
+        _train_stream = torch.cuda.Stream(device=pm.device, priority=_hi_pri)
+    else:
+        _train_stream = None
+
+    for batch_idx, (data, prefetch_event) in enumerate(data_iter):
         loss_info.update_timer()
-        pm.optimizer.zero_grad()
-        # data to device
-        data = [_to_device_if_needed(d) for d in data]
-        # compute loss
-        loss = pm.loss(data[0], *data[1:])
-        # backward pass and optimizer step
-        loss.backward()
-        pm.optimizer.step()
+        with (torch.cuda.stream(_train_stream) if _train_stream else contextlib.nullcontext()):
+            if prefetch_event is not None:
+                torch.cuda.current_stream().wait_event(prefetch_event)
+            pm.optimizer.zero_grad()
+            # data to device
+            data = [_to_device_if_needed(d) for d in data]
+            # compute loss
+            loss = pm.loss(data[0], *data[1:])
+            # backward pass and optimizer step
+            loss.backward()
+            pm.optimizer.step()
         # update loss for history and logging
         loss_info.update(loss.detach().item(), len(data[0]))
         loss_info.print_info(batch_idx)
@@ -620,18 +640,27 @@ def test_epoch(pm, dataloader, print_freq: int = 1):
             def _next_on_device(it):
                 if cuda_device is not None:
                     torch.cuda.set_device(cuda_device)
-                return next(it)
+                batch = next(it)
+                event = None
+                if cuda_device is not None:
+                    event = torch.cuda.Event()
+                    event.record()  # records on bg thread's stream (after DLPack sync)
+                return batch, event
 
             iterator = iter(loader)
             with ThreadPoolExecutor(max_workers=1) as executor:
                 future = executor.submit(_next_on_device, iterator)
                 while True:
                     try:
-                        batch = future.result()
+                        batch, event = future.result()
                     except StopIteration:
                         break
                     future = executor.submit(_next_on_device, iterator)
-                    yield batch
+                    yield batch, event
+
+        def _plain_iter_with_events(loader):
+            for batch in loader:
+                yield batch, None
 
         def _to_device_if_needed(x):
             if isinstance(x, torch.Tensor):
@@ -650,15 +679,25 @@ def test_epoch(pm, dataloader, print_freq: int = 1):
         data_iter = (
             _iter_with_background_prefetch(dataloader)
             if use_cuda_batch_prefetch
-            else dataloader
+            else _plain_iter_with_events(dataloader)
         )
 
-        for batch_idx, data in enumerate(data_iter):
+        # High-priority stream: training gets GPU scheduling priority over BBHx generation
+        if pm.device.type == "cuda":
+            _lo_pri, _hi_pri = torch.cuda.Stream.priority_range()
+            _train_stream = torch.cuda.Stream(device=pm.device, priority=_hi_pri)
+        else:
+            _train_stream = None
+
+        for batch_idx, (data, prefetch_event) in enumerate(data_iter):
             loss_info.update_timer()
-            # data to device
-            data = [_to_device_if_needed(d) for d in data]
-            # compute loss
-            loss = pm.loss(data[0], *data[1:])
+            with (torch.cuda.stream(_train_stream) if _train_stream else contextlib.nullcontext()):
+                if prefetch_event is not None:
+                    torch.cuda.current_stream().wait_event(prefetch_event)
+                # data to device
+                data = [_to_device_if_needed(d) for d in data]
+                # compute loss
+                loss = pm.loss(data[0], *data[1:])
             # update loss for history and logging
             loss_info.update(loss.item(), len(data[0]))
             loss_info.print_info(batch_idx)
