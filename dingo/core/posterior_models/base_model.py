@@ -27,14 +27,9 @@ from dingo.core.utils.misc import get_version
 from dingo.core.utils.trainutils import EarlyStopping
 
 try:
-    from torch.amp import GradScaler, autocast
+    from torch.amp import autocast
 except ImportError:
-    # PyTorch < 2.3 fallback
-    from torch.cuda.amp import GradScaler as _CudaGradScaler, autocast
-
-    class GradScaler:  # type: ignore[no-redef]
-        def __new__(cls, device="cuda", **kwargs):
-            return _CudaGradScaler(**kwargs)
+    from torch.cuda.amp import autocast
 
 
 class BasePosteriorModel(ABC):
@@ -610,14 +605,7 @@ def train_epoch(
         else _plain_iter_with_events(dataloader)
     )
 
-    # High-priority stream: training/NCCL gets GPU scheduling priority over BBHx generation
-    if pm.device.type == "cuda":
-        _lo_pri, _hi_pri = torch.cuda.Stream.priority_range()
-        _train_stream = torch.cuda.Stream(device=pm.device, priority=_hi_pri)
-    else:
-        _train_stream = None
-
-    scaler = GradScaler("cuda") if automatic_mixed_precision else None
+    _train_stream = None  # use default stream; priority isolation hurt BBHx more than it helped
 
     for batch_idx, (data, prefetch_event) in enumerate(data_iter):
         loss_info.update_timer()
@@ -628,21 +616,16 @@ def train_epoch(
                 pm.optimizer.zero_grad(set_to_none=True)
             # data to device
             data = [_to_device_if_needed(d) for d in data]
-            # compute loss
+            # compute loss (BF16 autocast if requested; no GradScaler needed for BF16)
             if automatic_mixed_precision:
-                with autocast("cuda"):
+                with autocast("cuda", dtype=torch.bfloat16):
                     loss = pm.loss(data[0], *data[1:])
-                scaler.scale(loss).backward()
             else:
                 loss = pm.loss(data[0], *data[1:])
-                loss.backward()
+            loss.backward()
             # optimizer step every N batches
             if (batch_idx + 1) % gradient_updates_per_optimizer_step == 0:
-                if automatic_mixed_precision:
-                    scaler.step(pm.optimizer)
-                    scaler.update()
-                else:
-                    pm.optimizer.step()
+                pm.optimizer.step()
         # update loss for history and logging
         loss_info.update(loss.detach().item(), len(data[0]))
         loss_info.print_info(batch_idx)
@@ -715,12 +698,7 @@ def test_epoch(pm, dataloader, print_freq: int = 1):
             else _plain_iter_with_events(dataloader)
         )
 
-        # High-priority stream: training gets GPU scheduling priority over BBHx generation
-        if pm.device.type == "cuda":
-            _lo_pri, _hi_pri = torch.cuda.Stream.priority_range()
-            _train_stream = torch.cuda.Stream(device=pm.device, priority=_hi_pri)
-        else:
-            _train_stream = None
+        _train_stream = None  # use default stream; priority isolation hurt BBHx more than it helped
 
         for batch_idx, (data, prefetch_event) in enumerate(data_iter):
             loss_info.update_timer()
