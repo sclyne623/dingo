@@ -282,6 +282,9 @@ def _run_training_ddp_worker(
             find_unused_parameters=find_unused_parameters,
         )
 
+        if local_settings.get("compile_network", False):
+            pm.network = torch.compile(pm.network)
+
         with threadpool_limits(limits=1, user_api="blas"):
             complete = train_stages(pm, wfd, train_dir, local_settings_rank)
 
@@ -937,6 +940,8 @@ def train_local():
             pm, wfd = prepare_training_resume(
                 args.checkpoint, local_settings, args.train_dir
             )
+        if local_settings.get("compile_network", False):
+            pm.network = torch.compile(pm.network)
         with threadpool_limits(limits=1, user_api="blas"):
             complete = train_stages(pm, wfd, args.train_dir, local_settings)
 
