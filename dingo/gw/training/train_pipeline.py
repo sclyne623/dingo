@@ -821,6 +821,10 @@ def train_stages(
             early_stopping=early_stopping,
             train_print_freq=local_settings.get("train_print_freq", 50),
             test_print_freq=local_settings.get("test_print_freq", 50),
+            gradient_updates_per_optimizer_step=stage.get(
+                "gradient_updates_per_optimizer_step", 1
+            ),
+            automatic_mixed_precision=stage.get("automatic_mixed_precision", False),
         )
         # if test_only, model should not be saved, and run is complete
         if local_settings.get("test_only", False):
