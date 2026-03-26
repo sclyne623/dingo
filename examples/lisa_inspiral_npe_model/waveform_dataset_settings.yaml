@@ -1,0 +1,73 @@
+# Waveform dataset settings for the LISA MBHB inspiral-only NPE model.
+#
+# Signals are truncated at the Schwarzschild ISCO frequency per source
+# (isco_cutoff: true), producing inspiral-only waveforms.
+#
+# Observation window: 3 months (bbhx_t_obs_end_years: 0.25).
+# Merger time fixed at 9 months (default_t_ref_years: 0.75), so the
+# merger is always 0.5 years outside the observation window.
+#
+# Run misc_scripts/full_vs_lwa_response.ipynb and
+# misc_scripts/multibanding_mismatch.ipynb BEFORE generating the dataset
+# to validate the domain settings and justify the full BBHx response.
+
+domain:
+  type: MultibandedFrequencyDomain
+  # Band boundaries [Hz]. Delta_f doubles in each successive band.
+  # Adjust based on multibanding_mismatch.ipynb results.
+  nodes: [1.0e-4, 1.0e-3, 5.0e-3, 2.0e-2, 1.0e-1]
+  delta_f_initial: 5.0e-6   # 5 µHz — band 0 resolution
+  base_domain:
+    type: UniformFrequencyDomain
+    f_min: 1.0e-4             # 0.1 mHz
+    f_max: 1.0e-1             # 100 mHz  (above f_ISCO of 10^5 Msun ≈ 44 mHz)
+    delta_f: 5.0e-6           # 5 µHz  →  ~20 000 base bins
+
+waveform_generator:
+  approximant: PhenomHM
+  f_ref: 1.0e-3               # 1 mHz  (inside LISA band for 10^5–10^6 Msun)
+  use_gpu: true
+  direct_response: true
+  backend_native_fused: true
+  # Higher-order modes for improved parameter estimation
+  mode_list: [[2, 2], [2, 1], [3, 3], [3, 2], [4, 4], [4, 3]]
+  # Inspiral-only: zero all bins above f_ISCO = 4400 Hz / (m1+m2) per source
+  isco_cutoff: true
+  # 3-month observation window; merger at 9 months → always inspiral-only
+  bbhx_t_obs_start_years: 0.0
+  bbhx_t_obs_end_years: 0.25
+  default_t_ref_years: 0.75
+  # Internal BBHx frequency grid resolution (log-spaced interpolation points)
+  bbhx_length: 2048
+
+# Intrinsic prior — sampled once at dataset generation time.
+# Extrinsic parameters (sky location, distance, etc.) are sampled per training step.
+intrinsic_prior:
+  # Component masses in solar masses: 10^5 – 10^6 Msun each
+  mass_1: bilby.core.prior.Constraint(minimum=5.0e4, maximum=1.0e6)
+  mass_2: bilby.core.prior.Constraint(minimum=5.0e4, maximum=1.0e6)
+  chirp_mass: bilby.gw.prior.UniformInComponentsChirpMass(minimum=4.3e4, maximum=8.7e5)
+  mass_ratio: bilby.gw.prior.UniformInComponentsMassRatio(minimum=0.1, maximum=1.0)
+  # Aligned-spin components (full range including retrograde)
+  chi_1: bilby.core.prior.Uniform(minimum=-0.99, maximum=0.99)
+  chi_2: bilby.core.prior.Uniform(minimum=-0.99, maximum=0.99)
+  # Inclination and coalescence phase — needed to generate the waveform polarisations
+  theta_jn: bilby.core.prior.Sine(name='theta_jn')
+  phase: bilby.core.prior.Uniform(minimum=0.0, maximum=6.283185307)
+  # Fixed reference values required for waveform generation in the dataset
+  luminosity_distance: 5000.0     # Mpc — placeholder; varied at training time
+  # t_ref = 0.75 years × YRSID_SI ≈ 23 653 200 s (merger at 9 months)
+  t_ref: 23653200.0
+
+# Number of intrinsic waveforms in the dataset
+num_samples: 500000
+
+# SVD compression of the waveform basis — computed from the dataset before training
+compression:
+  svd:
+    size: 200                         # SVD basis size per TDI channel
+    num_training_samples: 50000
+    num_validation_samples: 10000
+  # ASD file used to whiten waveforms during SVD construction.
+  # Generate with:  python misc_scripts/generate_lisa_asd.py
+  whitening: training_data/asds_lisa_fiducial.hdf5

@@ -2017,6 +2017,9 @@ class BBHxWaveformGenerator:
         # Keep BBHx defaults unless explicitly overridden.
         self.bbhx_t_obs_start_years = float(kwargs.get("bbhx_t_obs_start_years", 0.0))
         self.bbhx_t_obs_end_years = float(kwargs.get("bbhx_t_obs_end_years", 1.0))
+        # When True, zero all frequency bins above the Schwarzschild ISCO frequency
+        # f_ISCO = 4400 Hz / (m1+m2) for each source, producing inspiral-only waveforms.
+        self.isco_cutoff = bool(kwargs.get("isco_cutoff", False))
         default_t_ref_seconds = kwargs.get("default_t_ref_seconds", None)
         if default_t_ref_seconds is None:
             default_t_ref_years = float(kwargs.get("default_t_ref_years", 1.0))
@@ -2434,6 +2437,16 @@ class BBHxWaveformGenerator:
             if self.timing_profile:
                 self._timing_add("direct_waveform_call", time.perf_counter() - t0)
 
+            if self.isco_cutoff:
+                # Apply per-source ISCO frequency mask (batched).
+                # f_ISCO = 4400 Hz / M_total (Schwarzschild, 22-mode GW frequency).
+                xp = self.waveform_gen.xp
+                f_isco = xp.asarray(4400.0 / (m1 + m2))  # shape (batch,)
+                freq_arr = freqs if hasattr(freqs, "shape") else xp.asarray(freqs)
+                # waveform_data: (batch, 3, n_freqs) — broadcast mask over channels
+                mask = (freq_arr[None, :] <= f_isco[:, None])[:, None, :]
+                waveform_data = waveform_data * mask
+
             t0 = time.perf_counter() if self.timing_profile else None
             if self.use_gpu:
                 if self.timing_profile:
@@ -2549,6 +2562,15 @@ class BBHxWaveformGenerator:
                 waveform_payload = waveform_data
             else:
                 waveform_payload = self._to_numpy(waveform_data)
+
+            if self.isco_cutoff:
+                # Apply per-source ISCO frequency mask (single waveform path).
+                # f_ISCO = 4400 Hz / M_total (Schwarzschild, 22-mode GW frequency).
+                f_isco = 4400.0 / (parsed["m1"] + parsed["m2"])
+                freq_arr = np.asarray(freqs)
+                # waveform_payload: (3, n_freqs) — zero all bins above f_ISCO
+                waveform_payload = waveform_payload.copy()
+                waveform_payload[:, freq_arr > f_isco] = 0.0
 
             if self.direct_response:
                 # Training direct-response path consumes detector-frame waveform only.

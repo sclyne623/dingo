@@ -1,0 +1,35 @@
+# ASD dataset settings for the fiducial LISA noise model.
+#
+# Unlike ground-based detectors, LISA does not use real measured noise frames.
+# Instead, a theoretical ASD is computed from the ESA Proposal noise budget
+# (position noise + acceleration noise) for TDI channels A, E, T.
+#
+# Generate the HDF5 file with:
+#   python misc_scripts/generate_lisa_asd.py \
+#       --output training_data/asds_lisa_fiducial.hdf5
+#
+# The script (misc_scripts/generate_lisa_asd.py) evaluates the PSD on the
+# base UniformFrequencyDomain grid specified below and saves one fiducial ASD
+# per TDI channel (chan1=A, chan2=E, chan3=T).
+
+# Domain matching the base_domain in waveform_dataset_settings.yaml
+domain:
+  type: UniformFrequencyDomain
+  f_min: 1.0e-4
+  f_max: 1.0e-1
+  delta_f: 5.0e-6
+
+# TDI channels corresponding to chan1/chan2/chan3 in the training pipeline
+detectors:
+  - chan1   # TDI-A
+  - chan2   # TDI-E
+  - chan3   # TDI-T
+
+# Noise model parameters (passed to generate_lisa_asd.py if needed)
+noise_model:
+  name: ESA_Proposal
+  lisa_arm_metres: 2.5e9
+  # OMS (position) noise amplitude [m/sqrt(Hz)]
+  S_oms_amplitude: 1.5e-11
+  # TM (acceleration) noise amplitude [m/s^2/sqrt(Hz)]
+  S_acc_amplitude: 3.0e-15

@@ -1,0 +1,118 @@
+# Training settings for the LISA MBHB inspiral-only NPE model.
+#
+# Uses the BBHx direct-response path (on_fly: true) to generate A/E/T
+# TDI strains on-the-fly during training (requires GPU).
+#
+# Key differences from the ground-based npe_model:
+#   - detector_type: LISA  (selects GenerateBBHxDirectResponse transform)
+#   - detectors: [chan1, chan2, chan3]  (TDI-A, TDI-E, TDI-T)
+#   - No time-domain windowing (LISA analysis is in the frequency domain)
+#   - ref_time: 0.0  (LISA SSB epoch, not GPS)
+
+data:
+  waveform_dataset_path: training_data/waveform_dataset.hdf5
+  train_fraction: 0.95
+
+  # LISA-specific settings
+  detector_type: LISA
+  detectors:
+    - chan1   # TDI-A
+    - chan2   # TDI-E
+    - chan3   # TDI-T
+
+  # Window factor: LISA frequency-domain data requires no Tukey windowing.
+  # Setting type: 'no_window' gives window_factor = 1.0.
+  window:
+    type: no_window
+
+  # LISA SSB-frame reference epoch (seconds); 0.0 = start of LISA mission.
+  ref_time: 0.0
+
+  # Domain update: use the same bounds as the waveform dataset.
+  domain_update:
+    f_min: 1.0e-4
+    f_max: 1.0e-1
+
+  # Extrinsic parameters sampled fresh each training step.
+  extrinsic_prior:
+    eclipticlongitude: bilby.core.prior.Uniform(minimum=0.0, maximum=6.283185307)
+    eclipticlatitude:  bilby.core.prior.Cosine(name='eclipticlatitude')
+    psi:               bilby.core.prior.Uniform(minimum=0.0, maximum=3.141592653)
+    luminosity_distance: bilby.core.prior.Uniform(minimum=500.0, maximum=50000.0)
+    # Inclination and phase are treated as extrinsic (varied per training step
+    # independently of the stored intrinsic waveform).
+
+  # Parameters the network will infer
+  inference_parameters:
+    - chirp_mass
+    - mass_ratio
+    - chi_1
+    - chi_2
+    - theta_jn
+    - phase
+    - eclipticlongitude
+    - eclipticlatitude
+    - psi
+    - luminosity_distance
+
+# Model architecture — matches the standard npe_model scale.
+model:
+  posterior_model_type: normalizing_flow
+  posterior_kwargs:
+    num_flow_steps: 30
+    base_transform_kwargs:
+      hidden_dim: 512
+      num_transform_blocks: 5
+      activation: elu
+      dropout_probability: 0.0
+      batch_norm: true
+      num_bins: 8
+      base_transform_type: rq-coupling
+  embedding_kwargs:
+    output_dim: 128
+    hidden_dims:
+      [1024, 1024, 1024, 1024, 1024, 1024,
+        512,  512,  512,  512,  512,  512,
+        256,  256,  256,  256,  256,  256,
+        128,  128,  128,  128,  128,  128]
+    activation: elu
+    dropout: 0.0
+    batch_norm: true
+    svd:
+      num_training_samples: 50000
+      num_validation_samples: 10000
+      size: 200
+
+# Two-stage training: fixed fiducial ASD → later add ASD variation.
+training:
+  stage_0:
+    epochs: 300
+    # Single fiducial LISA ASD — generate with misc_scripts/generate_lisa_asd.py
+    asd_dataset_path: training_data/asds_lisa_fiducial.hdf5
+    freeze_rb_layer: true
+    optimizer:
+      type: adam
+      lr: 5.0e-5
+    scheduler:
+      type: cosine
+      T_max: 300
+    # Smaller batch than LIGO: 3 TDI channels × longer inspiral waveforms
+    batch_size: 512
+
+# Local / cluster settings — no impact on trained network weights.
+local:
+  device: cuda
+  # on_fly triggers GenerateBBHxDirectResponse (BBHx direct response on GPU)
+  on_fly: true
+  num_workers: 4
+  runtime_limits:
+    max_time_per_run: 3600000
+    max_epochs_per_run: 500
+  checkpoint_epochs: 50
+  leave_waveforms_on_disk: true
+  condor:
+    num_cpus: 16
+    memory_cpus: 128000
+    num_gpus: 1
+    memory_gpus: 32000
+    request_disk: 100GB
