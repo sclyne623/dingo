@@ -167,7 +167,7 @@ class UniformFrequencyDomain(BaseFrequencyDomain):
 
     def __len__(self):
         """Number of frequency bins in the domain [0, f_max]"""
-        return int(self.f_max / self.delta_f) + 1
+        return round(self.f_max / self.delta_f) + 1
 
     @property
     def sample_frequencies(self) -> np.ndarray:
