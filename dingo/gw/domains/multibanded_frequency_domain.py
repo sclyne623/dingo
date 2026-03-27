@@ -83,15 +83,17 @@ class MultibandedFrequencyDomain(BaseFrequencyDomain):
                 f"got {self.nodes.shape}."
             )
         self.num_bands = len(self.nodes) - 1
-        self._nodes_indices = (self.nodes / self.base_domain.delta_f).astype(int)
+        self._nodes_indices = np.round(
+            self.nodes / self.base_domain.delta_f
+        ).astype(int)
 
         self._delta_f_bands = (
             delta_f_initial * (2 ** np.arange(self.num_bands))
         ).astype(np.float64)
-        self._decimation_factors_bands = (
+        self._decimation_factors_bands = np.round(
             self._delta_f_bands / self.base_domain.delta_f
         ).astype(int)
-        self._num_bins_bands = (
+        self._num_bins_bands = np.round(
             (self._nodes_indices[1:] - self._nodes_indices[:-1])
             / self._decimation_factors_bands
         ).astype(int)
