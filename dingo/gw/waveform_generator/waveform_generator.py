@@ -2331,11 +2331,17 @@ class BBHxWaveformGenerator:
         return np.logspace(np.log10(f_min), np.log10(f_max), self.bbhx_length)
 
     def _get_output_frequency_grid(self) -> np.ndarray:
-        """Frequency grid for final waveforms, aligned with the Dingo domain."""
-        if hasattr(self.domain, "sample_frequencies"):
-            return np.asarray(self.domain.sample_frequencies, dtype=np.float64)
-        if hasattr(self.domain, "base_domain"):
-            return np.asarray(self.domain.base_domain.sample_frequencies, dtype=np.float64)
+        """Frequency grid for BBHx evaluation — always uniform.
+
+        For MultibandedFrequencyDomain, BBHx is evaluated on the uniform base-domain
+        grid so that its internal interpolation knots are evenly spaced in frequency.
+        The caller is responsible for decimating the result to the MBD afterwards.
+        """
+        domain = self._domain
+        if isinstance(domain, MultibandedFrequencyDomain):
+            return np.asarray(domain.base_domain.sample_frequencies, dtype=np.float64)
+        if hasattr(domain, "sample_frequencies"):
+            return np.asarray(domain.sample_frequencies, dtype=np.float64)
         return self._build_bbhx_frequency_grid()
 
     @staticmethod
@@ -2519,6 +2525,13 @@ class BBHxWaveformGenerator:
                 waveform_data = waveform_data * taper[:, None, :]
 
             t0 = time.perf_counter() if self.timing_profile else None
+            # For MBD, waveform was generated on the uniform base grid; decimate now.
+            if isinstance(self._domain, MultibandedFrequencyDomain):
+                out = self._domain.decimate(self._to_numpy(waveform_data))
+                if self.timing_profile:
+                    self._timing_add("direct_return_convert", time.perf_counter() - t0)
+                    self._timing_finalize("direct", time.perf_counter() - total_t0)
+                return out
             if self.use_gpu:
                 if self.timing_profile:
                     self._timing_add("direct_return_convert", time.perf_counter() - t0)
@@ -2532,8 +2545,12 @@ class BBHxWaveformGenerator:
         except Exception:
             if not catch_waveform_errors:
                 raise
-            nan_shape = (3, len(freqs))
-            return np.full(nan_shape, np.nan, dtype=np.complex128)
+            n_out = (
+                len(self._domain.sample_frequencies)
+                if isinstance(self._domain, MultibandedFrequencyDomain)
+                else len(freqs)
+            )
+            return np.full((3, n_out), np.nan, dtype=np.complex128)
 
     def _get_cached_backend_frequency_grid(self):
         """Return cached output frequencies in backend array type."""
@@ -2673,22 +2690,40 @@ class BBHxWaveformGenerator:
                     "phase": np.angle(waveform_payload),
                     "freqs": freqs,
                 }
+
+            # If the target domain is MBD the waveform was generated on the uniform
+            # base grid; decimate to the MBD grid now before returning.
+            if isinstance(self._domain, MultibandedFrequencyDomain):
+                mbd = self._domain
+                n_base = len(mbd.base_domain)
+                wf_dict = {
+                    k: (mbd.decimate(v)
+                        if isinstance(v, np.ndarray) and v.shape[-1] == n_base
+                        else v)
+                    for k, v in wf_dict.items()
+                }
+                wf_dict["freqs"] = np.asarray(mbd.sample_frequencies)
+
             if self.timing_profile:
                 self._timing_add("amp_package", time.perf_counter() - t0)
                 self._timing_finalize("amp", time.perf_counter() - total_t0)
-            
+
             return wf_dict
-            
+
         except Exception as e:
             if catch_waveform_errors:
                 warnings.warn(f"Waveform generation failed: {e}")
-                # Default to three LISA channels when shape inference is not available.
-                nan_shape = (3, len(freqs))
+                out_freqs = (
+                    np.asarray(self._domain.sample_frequencies)
+                    if isinstance(self._domain, MultibandedFrequencyDomain)
+                    else np.asarray(freqs)
+                )
+                nan_shape = (3, len(out_freqs))
                 return {
                     "waveform": np.full(nan_shape, np.nan, dtype=np.complex128),
-                    "amp": np.full(nan_shape, np.nan),
-                    "phase": np.full(nan_shape, np.nan),
-                    "freqs": freqs,
+                    "amp":      np.full(nan_shape, np.nan),
+                    "phase":    np.full(nan_shape, np.nan),
+                    "freqs":    out_freqs,
                 }
             else:
                 raise
