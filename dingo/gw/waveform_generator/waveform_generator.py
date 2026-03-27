@@ -49,6 +49,38 @@ except ImportError:
 
 
 
+def get_f_isco(m1, m2, chi1, chi2, xp=np):
+    """Calculate ISCO frequency (Hz) for a binary — Kerr effective-spin approximation.
+
+    Uses the effective (mass-weighted) spin to estimate the Kerr ISCO radius, then
+    converts to a GW frequency in Hz.  For zero spin this reduces to the standard
+    Schwarzschild result f_ISCO ≈ 4400 / M_tot.
+
+    Parameters
+    ----------
+    m1, m2 : float or array
+        Component masses in solar masses.
+    chi1, chi2 : float or array
+        Dimensionless aligned-spin components.
+    xp : module
+        Array module to use (``numpy`` or ``cupy``).  Defaults to numpy.
+
+    Returns
+    -------
+    f_isco_hz : float or array
+        GW frequency at the ISCO in Hz.
+    """
+    M_tot = m1 + m2
+    a = (m1 * chi1 + m2 * chi2) / M_tot
+    a = xp.clip(a, -0.9999, 0.9999)
+    Z1 = 1 + (1 - a**2) ** (1 / 3) * ((1 + a) ** (1 / 3) + (1 - a) ** (1 / 3))
+    Z2 = xp.sqrt(3 * a**2 + Z1**2)
+    r_isco = 3 + Z2 - xp.sqrt((3 - Z1) * (3 + Z1 + 2 * Z2))
+    omega_isco = 1.0 / (r_isco**1.5 + a)
+    # c^3 / (G * M_sun) ≈ 203292 Hz  (converts geometric units to physical Hz)
+    return (omega_isco / xp.pi) * (203292.0 / M_tot)
+
+
 class WaveformGenerator:
     """Generate polarizations using LALSimulation routines in the specified domain for a
     single GW coalescence given a set of waveform parameters.
@@ -2017,9 +2049,11 @@ class BBHxWaveformGenerator:
         # Keep BBHx defaults unless explicitly overridden.
         self.bbhx_t_obs_start_years = float(kwargs.get("bbhx_t_obs_start_years", 0.0))
         self.bbhx_t_obs_end_years = float(kwargs.get("bbhx_t_obs_end_years", 1.0))
-        # When True, zero all frequency bins above the Schwarzschild ISCO frequency
-        # f_ISCO = 4400 Hz / (m1+m2) for each source, producing inspiral-only waveforms.
+        # When True, apply an ISCO taper/cutoff to produce inspiral-only waveforms.
         self.isco_cutoff = bool(kwargs.get("isco_cutoff", False))
+        # Fractional frequency width of the raised-cosine taper below f_ISCO.
+        # 0.0 → hard mask (legacy); 0.1 → taper starts at 0.9 * f_ISCO.
+        self.isco_taper_width = float(kwargs.get("isco_taper_width", 0.1))
         default_t_ref_seconds = kwargs.get("default_t_ref_seconds", None)
         if default_t_ref_seconds is None:
             default_t_ref_years = float(kwargs.get("default_t_ref_years", 1.0))
@@ -2075,6 +2109,38 @@ class BBHxWaveformGenerator:
     @staticmethod
     def _to_numpy(x):
         return x.get() if hasattr(x, "get") else np.asarray(x)
+
+    @staticmethod
+    def _isco_taper(freq_arr, f_isco, taper_width, xp):
+        """Build a frequency-domain window that tapers smoothly to zero at f_isco.
+
+        Parameters
+        ----------
+        freq_arr : array
+            Frequency array, broadcastable against f_isco.
+        f_isco : float or array
+            ISCO frequency per source, broadcastable against freq_arr.
+        taper_width : float
+            Fraction of f_isco below which the taper onset begins.
+            0.0 → hard mask; 0.1 → raised-cosine onset at 0.9 * f_isco.
+        xp : module
+            Array module (numpy or cupy).
+
+        Returns
+        -------
+        window : array
+            Values in [0, 1] with the same shape as ``freq_arr * f_isco``.
+        """
+        if taper_width <= 0:
+            return (freq_arr <= f_isco).astype(float)
+        f_start = f_isco * (1.0 - taper_width)
+        # Normalised position: 0 at f_start, 1 at f_isco
+        t = (freq_arr - f_start) / (f_isco - f_start)
+        t = xp.clip(t, 0.0, 1.0)
+        window = 0.5 * (1.0 + xp.cos(xp.pi * t))
+        window = xp.where(freq_arr > f_isco, xp.zeros_like(window), window)
+        window = xp.where(freq_arr < f_start, xp.ones_like(window), window)
+        return window
 
     def set_timing_profile(self, enabled: bool, print_every: int = None):
         self.timing_profile = bool(enabled)
@@ -2438,14 +2504,19 @@ class BBHxWaveformGenerator:
                 self._timing_add("direct_waveform_call", time.perf_counter() - t0)
 
             if self.isco_cutoff:
-                # Apply per-source ISCO frequency mask (batched).
-                # f_ISCO = 4400 Hz / M_total (Schwarzschild, 22-mode GW frequency).
+                # Apply per-source Kerr ISCO taper (batched).
                 xp = self.waveform_gen.xp
-                f_isco = xp.asarray(4400.0 / (m1 + m2))  # shape (batch,)
+                f_isco = get_f_isco(
+                    xp.asarray(m1), xp.asarray(m2),
+                    xp.asarray(chi1z), xp.asarray(chi2z),
+                    xp=xp,
+                )  # shape (batch,)
                 freq_arr = freqs if hasattr(freqs, "shape") else xp.asarray(freqs)
-                # waveform_data: (batch, 3, n_freqs) — broadcast mask over channels
-                mask = (freq_arr[None, :] <= f_isco[:, None])[:, None, :]
-                waveform_data = waveform_data * mask
+                # taper: (batch, n_freqs); add channel dim → (batch, 1, n_freqs)
+                taper = self._isco_taper(
+                    freq_arr[None, :], f_isco[:, None], self.isco_taper_width, xp
+                )
+                waveform_data = waveform_data * taper[:, None, :]
 
             t0 = time.perf_counter() if self.timing_profile else None
             if self.use_gpu:
@@ -2559,11 +2630,14 @@ class BBHxWaveformGenerator:
             t0 = time.perf_counter() if self.timing_profile else None
 
             if self.isco_cutoff:
-                # Apply per-source ISCO frequency mask on the GPU (before numpy
-                # conversion). f_ISCO = 4400 Hz / M_total (Schwarzschild, 22-mode).
+                # Apply Kerr ISCO taper on the GPU before numpy conversion.
                 xp = self.waveform_gen.xp
-                f_isco = 4400.0 / (parsed["m1"] + parsed["m2"])
-                freq_arr = freqs if hasattr(freqs, 'shape') else xp.asarray(freqs)
+                m1_s = float(parsed["m1"].ravel()[0])
+                m2_s = float(parsed["m2"].ravel()[0])
+                chi1_s = float(parsed["chi1z"].ravel()[0])
+                chi2_s = float(parsed["chi2z"].ravel()[0])
+                f_isco = get_f_isco(m1_s, m2_s, chi1_s, chi2_s)  # scalar
+                freq_arr = freqs if hasattr(freqs, "shape") else xp.asarray(freqs)
                 n_f = len(freq_arr)
                 # Locate the frequency axis (shape varies by BBHx version/path).
                 freq_axis = next(
@@ -2574,10 +2648,10 @@ class BBHxWaveformGenerator:
                         f"isco_cutoff: cannot find frequency axis; "
                         f"waveform shape {waveform_data.shape}, n_freqs={n_f}"
                     )
+                taper = self._isco_taper(freq_arr, f_isco, self.isco_taper_width, xp)
                 keep_shape = [1] * waveform_data.ndim
                 keep_shape[freq_axis] = n_f
-                keep = (freq_arr <= float(f_isco)).reshape(keep_shape)
-                waveform_data = waveform_data * keep
+                waveform_data = waveform_data * taper.reshape(keep_shape)
 
             if self.direct_response and self.gpu_fastpath:
                 # Keep backend array type (e.g., CuPy) for CUDA fast-path transforms.
