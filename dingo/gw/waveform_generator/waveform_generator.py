@@ -2331,15 +2331,17 @@ class BBHxWaveformGenerator:
         return np.logspace(np.log10(f_min), np.log10(f_max), self.bbhx_length)
 
     def _get_output_frequency_grid(self) -> np.ndarray:
-        """Frequency grid for BBHx evaluation — always uniform.
+        """Frequency grid passed to BBHx for evaluation.
 
-        For MultibandedFrequencyDomain, BBHx is evaluated on the uniform base-domain
-        grid so that its internal interpolation knots are evenly spaced in frequency.
-        The caller is responsible for decimating the result to the MBD afterwards.
+        For MultibandedFrequencyDomain, use the sparse log-spaced internal grid so
+        that BBHx's 1024 knots are well distributed. Amplitude and phase are then
+        interpolated independently to MBD frequencies in generate_amp_phase /
+        generate_direct_response_backend_native to avoid phase corruption from
+        complex-value averaging.
         """
         domain = self._domain
         if isinstance(domain, MultibandedFrequencyDomain):
-            return np.asarray(domain.base_domain.sample_frequencies, dtype=np.float64)
+            return self._build_bbhx_frequency_grid()
         if hasattr(domain, "sample_frequencies"):
             return np.asarray(domain.sample_frequencies, dtype=np.float64)
         return self._build_bbhx_frequency_grid()
@@ -2509,8 +2511,9 @@ class BBHxWaveformGenerator:
             if self.timing_profile:
                 self._timing_add("direct_waveform_call", time.perf_counter() - t0)
 
-            if self.isco_cutoff:
-                # Apply per-source Kerr ISCO taper (batched).
+            # For non-MBD domains, apply the ISCO taper on the sparse/base grid now
+            # (on GPU if available). For MBD, the taper is applied after interpolation.
+            if self.isco_cutoff and not isinstance(self._domain, MultibandedFrequencyDomain):
                 xp = self.waveform_gen.xp
                 f_isco = get_f_isco(
                     xp.asarray(m1), xp.asarray(m2),
@@ -2525,9 +2528,25 @@ class BBHxWaveformGenerator:
                 waveform_data = waveform_data * taper[:, None, :]
 
             t0 = time.perf_counter() if self.timing_profile else None
-            # For MBD, waveform was generated on the uniform base grid; decimate now.
+            # For MBD: convert to CPU, interpolate amp and phase independently to MBD
+            # frequencies (avoids phase corruption from complex-bin averaging), then
+            # optionally apply the batched ISCO taper on the MBD grid and recombine.
             if isinstance(self._domain, MultibandedFrequencyDomain):
-                out = self._domain.decimate(self._to_numpy(waveform_data))
+                sparse_freqs_np = np.asarray(self._cached_output_freqs_cpu)
+                waveform_np = self._to_numpy(waveform_data)  # (n_batch, 3, n_sparse)
+                amp_mbd, phase_mbd, mbd_freqs = self._amp_phase_interp_to_mbd(
+                    waveform_np, sparse_freqs_np
+                )  # (n_batch, 3, n_mbd)
+                if self.isco_cutoff:
+                    f_isco_cpu = get_f_isco(
+                        np.asarray(m1), np.asarray(m2),
+                        np.asarray(chi1z), np.asarray(chi2z), xp=np,
+                    )  # (n_batch,)
+                    taper_mbd = self._isco_taper(
+                        mbd_freqs[None, :], f_isco_cpu[:, None], self.isco_taper_width, np
+                    )  # (n_batch, n_mbd)
+                    amp_mbd = amp_mbd * taper_mbd[:, None, :]
+                out = amp_mbd * np.exp(1j * phase_mbd)
                 if self.timing_profile:
                     self._timing_add("direct_return_convert", time.perf_counter() - t0)
                     self._timing_finalize("direct", time.perf_counter() - total_t0)
@@ -2563,6 +2582,47 @@ class BBHxWaveformGenerator:
                 self._cached_output_freqs_cpu
             )
         return self._cached_output_freqs_backend
+
+    def _amp_phase_interp_to_mbd(
+        self,
+        waveform_np: np.ndarray,
+        sparse_freqs: np.ndarray,
+    ):
+        """Interpolate amp and phase from sparse grid to MBD frequencies independently.
+
+        Parameters
+        ----------
+        waveform_np : complex numpy array, shape (..., n_sparse)
+        sparse_freqs : 1-D float64 array of length n_sparse
+
+        Returns
+        -------
+        amp_mbd   : float array, shape (..., n_mbd)
+        phase_mbd : float array, shape (..., n_mbd) — unwrapped phase
+        mbd_freqs : float array, shape (n_mbd,)
+        """
+        from scipy.interpolate import interp1d
+        mbd = self._domain
+        mbd_freqs = np.asarray(mbd.sample_frequencies, dtype=np.float64)
+
+        amp   = np.abs(waveform_np)
+        phase = np.unwrap(np.angle(waveform_np), axis=-1)
+
+        orig_shape = waveform_np.shape
+        n_mbd = len(mbd_freqs)
+        flat_amp   = amp.reshape(-1, orig_shape[-1])
+        flat_phase = phase.reshape(-1, orig_shape[-1])
+
+        def _interp_rows(flat, target):
+            return np.stack([
+                interp1d(sparse_freqs, row, kind="cubic",
+                         bounds_error=False, fill_value="extrapolate")(target)
+                for row in flat
+            ], axis=0)
+
+        amp_mbd   = _interp_rows(flat_amp,   mbd_freqs).reshape(orig_shape[:-1] + (n_mbd,))
+        phase_mbd = _interp_rows(flat_phase, mbd_freqs).reshape(orig_shape[:-1] + (n_mbd,))
+        return amp_mbd, phase_mbd, mbd_freqs
 
     def generate_amp_phase(
         self, parameters: Dict[str, float], catch_waveform_errors=False,
@@ -2646,8 +2706,10 @@ class BBHxWaveformGenerator:
             # indexing a single channel.
             t0 = time.perf_counter() if self.timing_profile else None
 
-            if self.isco_cutoff:
-                # Apply Kerr ISCO taper on the GPU before numpy conversion.
+            # For non-MBD domains, apply ISCO taper on the sparse/base grid now
+            # (on GPU if available). For MBD, the taper is applied after interpolation
+            # to avoid corrupting the phase extraction.
+            if self.isco_cutoff and not isinstance(self._domain, MultibandedFrequencyDomain):
                 xp = self.waveform_gen.xp
                 m1_s = float(parsed["m1"].ravel()[0])
                 m2_s = float(parsed["m2"].ravel()[0])
@@ -2676,33 +2738,52 @@ class BBHxWaveformGenerator:
             else:
                 waveform_payload = self._to_numpy(waveform_data)
 
-            if self.direct_response:
-                # Training direct-response path consumes detector-frame waveform only.
-                # Skip unused amp/phase construction to reduce per-batch overhead.
-                wf_dict = {
-                    "waveform": waveform_payload,
-                    "freqs": freqs,
-                }
-            else:
-                wf_dict = {
-                    "waveform": waveform_payload,
-                    "amp": np.abs(waveform_payload),
-                    "phase": np.angle(waveform_payload),
-                    "freqs": freqs,
-                }
-
-            # If the target domain is MBD the waveform was generated on the uniform
-            # base grid; decimate to the MBD grid now before returning.
+            # For MBD: interpolate amp and phase independently to MBD frequencies,
+            # then optionally apply ISCO taper on the MBD grid and recombine.
+            # This avoids phase corruption that results from averaging complex bins.
             if isinstance(self._domain, MultibandedFrequencyDomain):
-                mbd = self._domain
-                n_base = len(mbd.base_domain)
-                wf_dict = {
-                    k: (mbd.decimate(v)
-                        if isinstance(v, np.ndarray) and v.shape[-1] == n_base
-                        else v)
-                    for k, v in wf_dict.items()
-                }
-                wf_dict["freqs"] = np.asarray(mbd.sample_frequencies)
+                sparse_freqs_np = np.asarray(self._cached_output_freqs_cpu)
+                wp_np = (waveform_payload
+                         if isinstance(waveform_payload, np.ndarray)
+                         else self._to_numpy(waveform_payload))
+
+                amp_mbd, phase_mbd, mbd_freqs = self._amp_phase_interp_to_mbd(
+                    wp_np, sparse_freqs_np
+                )
+
+                if self.isco_cutoff:
+                    m1_s   = float(parsed["m1"].ravel()[0])
+                    m2_s   = float(parsed["m2"].ravel()[0])
+                    chi1_s = float(parsed["chi1z"].ravel()[0])
+                    chi2_s = float(parsed["chi2z"].ravel()[0])
+                    f_isco = get_f_isco(m1_s, m2_s, chi1_s, chi2_s)
+                    taper_mbd = self._isco_taper(mbd_freqs, f_isco, self.isco_taper_width, np)
+                    amp_mbd = amp_mbd * taper_mbd
+
+                waveform_mbd = amp_mbd * np.exp(1j * phase_mbd)
+
+                if self.direct_response:
+                    wf_dict = {"waveform": waveform_mbd, "freqs": mbd_freqs}
+                else:
+                    wf_dict = {
+                        "waveform": waveform_mbd,
+                        "amp":   amp_mbd,
+                        "phase": phase_mbd,
+                        "freqs": mbd_freqs,
+                    }
+            else:
+                if self.direct_response:
+                    wf_dict = {
+                        "waveform": waveform_payload,
+                        "freqs": freqs,
+                    }
+                else:
+                    wf_dict = {
+                        "waveform": waveform_payload,
+                        "amp": np.abs(waveform_payload),
+                        "phase": np.angle(waveform_payload),
+                        "freqs": freqs,
+                    }
 
             if self.timing_profile:
                 self._timing_add("amp_package", time.perf_counter() - t0)
