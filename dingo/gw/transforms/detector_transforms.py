@@ -11,6 +11,7 @@ from bilby.gw.prior import CalibrationPriorDict
 
 import lisabeta.lisa.pyresponse as pyresponse
 import lisabeta.tools.pyspline as pyspline
+import lisabeta.pyconstants as pyconstants
 import ast
 
 import os
@@ -631,9 +632,8 @@ class ProjectOntoSpaceDetectors(object):
                 "Expected distance, sky location, polarization, and inclination."
             )
         
-        #Hard Code for now need to confirm this is geocent_time
-        #t0=1735300818.
-        t0=0.
+        # Convert geocent_time (seconds) to years for LISA orbital position
+        t0 = tc_new / pyconstants.YRSID_SI
         
         
         # (1) rescale polarizations and set distance parameter to sampled value
@@ -729,8 +729,8 @@ class ProjectOntoSpaceDetectors(object):
                 
             
                 #Calculate Transfer Functions using list comprehension
-                mode_strains = [process_transfer(freq_grid,amp, phase,tf,t0,l,m,inc_,phi_,lambd_, beta_, psi_,interp_freqs,self.domain.f_min,self.detector_type,self.LISAconst, 
-                        self.responseapprox, self.frozenLISA,self.TDIrescaled) for freq_grid,amp,phase, tf, inc_,phi_,lambd_, beta_, psi_ in zip(sample["waveform"][lm]["freq"],sample["waveform"][lm]["amp"],sample["waveform"][lm]["phase"],sample["waveform"][lm]["tf"],inc,phi,lambd,beta,psi)]
+                mode_strains = [process_transfer(freq_grid,amp, phase,tf,t0_,l,m,inc_,phi_,lambd_, beta_, psi_,interp_freqs,self.domain.f_min,self.detector_type,self.LISAconst,
+                        self.responseapprox, self.frozenLISA,self.TDIrescaled) for freq_grid,amp,phase, tf, inc_,phi_,lambd_, beta_, psi_, t0_ in zip(sample["waveform"][lm]["freq"],sample["waveform"][lm]["amp"],sample["waveform"][lm]["phase"],sample["waveform"][lm]["tf"],inc,phi,lambd,beta,psi,np.atleast_1d(t0))]
 
                 #Probably dont need this but useful for checking
                 chan1_mode = np.stack([i[0] for i in mode_strains], axis=0)
