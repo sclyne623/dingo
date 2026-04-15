@@ -1705,7 +1705,6 @@ class LISAWaveformGenerator:
         transform=None,
         spin_conversion_phase=None,
         frozenLISA = False,
-        ref_time: float = 0.0,
         **kwargs,
     ):
         """
@@ -1760,7 +1759,6 @@ class LISAWaveformGenerator:
 
         self.transform = transform
         self.frozenLISA = frozenLISA
-        self.ref_time = ref_time
     
     @property
     def domain(self):
@@ -1843,10 +1841,9 @@ class LISAWaveformGenerator:
     
         parameters = parameters.copy()
 
-        # geocent_time is a small offset (s) relative to ref_time (s, GPS).
-        # The absolute merger time determines LISA's orbital position.
-        geocent_time_s = parameters.get("geocent_time", 0.0)
-        t0 = (self.ref_time + geocent_time_s) / pyconstants.YRSID_SI
+        # Waveforms are generated at geocent_time=0 (template convention).
+        # LISA's orbital position is handled by ProjectOntoSpaceDetectors using ref_time.
+        t0 = 0.
 
         #Convert everything to SSB frame
         parameters = self.convert_parameters(parameters, self.frozenLISA, t0=t0)
