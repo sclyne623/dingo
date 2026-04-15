@@ -1840,14 +1840,17 @@ class LISAWaveformGenerator:
         """
     
         parameters = parameters.copy()
-        
+
+        # Extract geocent_time (seconds) and convert to years for LISA orbital position
+        geocent_time_s = parameters.get("geocent_time", parameters.get("t_ref", 0.0))
+        t0 = geocent_time_s / pyconstants.YRSID_SI
+
         #Convert everything to SSB frame
-        parameters = self.convert_parameters(parameters,self.frozenLISA)
-        
+        parameters = self.convert_parameters(parameters, self.frozenLISA, t0=t0)
+
         #parameters["f_ref"] = self.f_ref
 
-        
-        gridfreq = self.Generate_coarse_freq_grid(parameters)
+        gridfreq = self.Generate_coarse_freq_grid(parameters, t0=t0)
         
         if (self.approximant_str=='IMRPhenomD'):
 
@@ -1919,8 +1922,8 @@ class LISAWaveformGenerator:
         return parameters
     
     
-    def Generate_coarse_freq_grid(self,params):
-        fLow, fHigh = wfg_utils.FrequencyBoundsLISATDI_SMBH(params, t0=0., timetomerger_max=1., minf=self.domain.f_min, maxf=self.domain.f_max, 
+    def Generate_coarse_freq_grid(self, params, t0=0.):
+        fLow, fHigh = wfg_utils.FrequencyBoundsLISATDI_SMBH(params, t0=t0, timetomerger_max=1., minf=self.domain.f_min, maxf=self.domain.f_max,
                                                   fstart22=None, fend22=None, tmin=None, tmax=None, Mfmax_model=0.3, 
                                                   DeltatL_cut=None, DeltatSSB_cut=None, scale_freq_hm=True, 
                                                   modes=None, f_t_acc=1e-06, approximant=self.approximant_str)
