@@ -632,8 +632,9 @@ class ProjectOntoSpaceDetectors(object):
                 "Expected distance, sky location, polarization, and inclination."
             )
         
-        # Convert geocent_time (seconds) to years for LISA orbital position
-        t0 = tc_new / pyconstants.YRSID_SI
+        # geocent_time is a small offset (s) relative to ref_time (s, GPS).
+        # The absolute merger time determines LISA's orbital position.
+        t0 = (self.ref_time + tc_new) / pyconstants.YRSID_SI
         
         
         # (1) rescale polarizations and set distance parameter to sampled value
