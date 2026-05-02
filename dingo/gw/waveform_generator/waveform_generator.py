@@ -35,6 +35,7 @@ from dingo.gw.transforms.waveform_transforms import DecimateAll
 import lisabeta.lisa.lisatools as lisatools
 import lisabeta.pyconstants as pyconstants
 import lisabeta.waveforms.bbh.pyIMRPhenomHM as pyIMRPhenomHM
+import lisabeta.waveforms.bbh.pyIMRPhenomXHM as pyIMRPhenomXHM
 import lisabeta.waveforms.bbh.pyIMRPhenomD as pyIMRPhenomD
 import lisabeta.tools.pytools as pytools
 
@@ -1865,6 +1866,12 @@ class LISAWaveformGenerator:
             # fref means fref_for_phiref, default fpeak
             wfClass = pyIMRPhenomHM.IMRPhenomHMhlmAmpPhase(gridfreq,parameters["m1"], parameters["m2"], parameters["chi1"], parameters["chi2"],parameters["dist"], phiref=0., fref=0.,Deltat = parameters["Deltat"], scale_freq_hm=True, extra_params=None)
             wfhlm = wfClass.get_waveform()
+
+        elif (self.approximant_str =='IMRPhenomXHM'):
+        
+            wfClass = pyIMRPhenomXHM.IMRPhenomXHMhlmAmpPhase(gridfreq, parameters["m1"], parameters["m2"], parameters["chi1"], parameters["chi2"],parameters["dist"], phiref=0., fref=0., Deltat=parameters["Deltat"], scale_freq_hm=True, extra_params=None)
+            wfhlm = wfClass.get_waveform()
+        
         return wfhlm
             
     def generate_amp_phase_m(self, parameters):
