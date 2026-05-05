@@ -2027,6 +2027,14 @@ class BBHxWaveformGenerator:
         # Keep BBHx defaults unless explicitly overridden.
         self.bbhx_t_obs_start_years = float(kwargs.get("bbhx_t_obs_start_years", 0.0))
         self.bbhx_t_obs_end_years = float(kwargs.get("bbhx_t_obs_end_years", 1.0))
+        # If True, multiply the bbhx output by exp(+i 2π f t_ref) so that the
+        # merger lands at t=0 in the strain time axis (dingo / lisabeta
+        # convention). The carrier exp(-i 2π f t_ref) is exact at numerical
+        # precision (validated empirically); the response geometry is
+        # unaffected because it is not a linear-in-f phase. Consumers that see
+        # a decentered waveform must re-apply the shift via t_ref carried on
+        # the output dict / sample.
+        self.decenter_waveform = bool(kwargs.get("decenter_waveform", False))
         default_t_ref_seconds = kwargs.get("default_t_ref_seconds", None)
         if default_t_ref_seconds is None:
             default_t_ref_years = float(kwargs.get("default_t_ref_years", 1.0))
@@ -2082,6 +2090,31 @@ class BBHxWaveformGenerator:
     @staticmethod
     def _to_numpy(x):
         return x.get() if hasattr(x, "get") else np.asarray(x)
+
+    def _decenter_waveform(self, waveform, freqs, t_ref):
+        """Multiply by exp(+i 2π f t_ref) so the merger sits at the canonical
+        t=0 of the strain time axis. ``freqs`` runs along the last axis of
+        ``waveform``. ``t_ref`` is a scalar or 1-D array of length B; the bbhx
+        output convention is (channels, length) for B=1 (squeezed) or
+        (channels, B, length) for B>1.
+        """
+        xp = self.waveform_gen.xp if hasattr(self.waveform_gen, "xp") else np
+        f = xp.asarray(freqs).reshape(-1)
+        t = xp.atleast_1d(xp.asarray(t_ref))
+        two_pi_i = 1j * 2.0 * np.pi
+        if waveform.ndim == 2:
+            # (channels, length)
+            phasor = xp.exp(two_pi_i * float(t.ravel()[0]) * f)
+            return waveform * phasor[None, :]
+        if waveform.ndim == 3:
+            # bbhx native: (channels, B, length).
+            if t.shape[0] != waveform.shape[1] and t.shape[0] == 1:
+                t = xp.broadcast_to(t, (waveform.shape[1],))
+            phasor = xp.exp(two_pi_i * t[:, None] * f[None, :])  # (B, length)
+            return waveform * phasor[None, :, :]
+        raise ValueError(
+            f"_decenter_waveform: unsupported shape {tuple(waveform.shape)}"
+        )
 
     def set_timing_profile(self, enabled: bool, print_every: int = None):
         self.timing_profile = bool(enabled)
@@ -2444,6 +2477,14 @@ class BBHxWaveformGenerator:
             if self.timing_profile:
                 self._timing_add("direct_waveform_call", time.perf_counter() - t0)
 
+            if self.decenter_waveform:
+                t0 = time.perf_counter() if self.timing_profile else None
+                waveform_data = self._decenter_waveform(waveform_data, freqs, t_ref)
+                if self.timing_profile:
+                    self._timing_add(
+                        "direct_decenter", time.perf_counter() - t0
+                    )
+
             t0 = time.perf_counter() if self.timing_profile else None
             if self.use_gpu:
                 if self.timing_profile:
@@ -2550,7 +2591,10 @@ class BBHxWaveformGenerator:
             )
             if self.timing_profile:
                 self._timing_add("amp_waveform_call", time.perf_counter() - t0)
-            
+
+            if self.decenter_waveform:
+                waveform_data = self._decenter_waveform(waveform_data, freqs, t_ref)
+
             # Package waveform data. Keep all returned channels (A/E/T) rather than
             # indexing a single channel.
             t0 = time.perf_counter() if self.timing_profile else None
@@ -2575,6 +2619,11 @@ class BBHxWaveformGenerator:
                     "phase": np.angle(waveform_payload),
                     "freqs": freqs,
                 }
+            if self.decenter_waveform:
+                # Carry t_ref so the projection / detector transform can
+                # re-apply exp(-i 2π f t_ref) and recover the physical strain.
+                wf_dict["t_ref"] = self._to_numpy(t_ref)
+                wf_dict["decentered"] = True
             if self.timing_profile:
                 self._timing_add("amp_package", time.perf_counter() - t0)
                 self._timing_finalize("amp", time.perf_counter() - total_t0)

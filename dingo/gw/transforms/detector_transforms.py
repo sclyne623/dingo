@@ -399,6 +399,48 @@ class GenerateBBHxDirectResponse(object):
         if self.timing_profile:
             self._record_timing("channel_pack", time.perf_counter() - t0)
 
+        # If the waveform generator returned a "decentered" waveform (merger at
+        # t=0 in source frame, dingo / lisabeta convention), re-apply the time
+        # shift exp(-i 2π f t_ref) here -- this is the LISA analogue of
+        # ProjectOntoDetectors applying time_translate_data(strain, dt) for
+        # ground-based detectors.
+        if getattr(self.waveform_generator, "decenter_waveform", False):
+            t_ref_val = self._get_first(
+                extrinsic_parameters,
+                ["t_ref", "geocent_time"],
+                self._get_first(
+                    parameters,
+                    ["t_ref", "geocent_time"],
+                    self.waveform_generator.default_t_ref_seconds,
+                ),
+            )
+            freqs_cpu = np.asarray(
+                self.waveform_generator._get_cached_backend_frequency_grid()
+                if not getattr(self.waveform_generator, "use_gpu", False)
+                else self.waveform_generator._cached_output_freqs_cpu
+                if self.waveform_generator._cached_output_freqs_cpu is not None
+                else self.waveform_generator._get_output_frequency_grid()
+            )
+            t_arr = np.atleast_1d(np.asarray(t_ref_val, dtype=np.float64))
+            # phasor[B, Nf] = exp(-i 2π f t_b)
+            phasor_np = np.exp(
+                -1j * 2.0 * np.pi * t_arr[:, None] * freqs_cpu[None, :]
+            )
+            for key in list(strains.keys()):
+                s = strains[key]
+                if isinstance(s, torch.Tensor):
+                    phasor = torch.from_numpy(phasor_np).to(
+                        device=s.device, dtype=s.dtype
+                    )
+                    if s.shape[0] != phasor.shape[0] and phasor.shape[0] == 1:
+                        phasor = phasor.expand(s.shape[0], -1)
+                    strains[key] = s * phasor
+                else:
+                    p = phasor_np
+                    if s.shape[0] != p.shape[0] and p.shape[0] == 1:
+                        p = np.broadcast_to(p, (s.shape[0], p.shape[1]))
+                    strains[key] = s * p
+
         # Keep parameter bookkeeping consistent with downstream transforms.
         t0 = time.perf_counter() if self.timing_profile else None
         dist = self._get_first(
@@ -568,6 +610,33 @@ class ProjectOntoSpaceDetectors(object):
             strains = {"chan1": chan1, "chan2": chan2}
             if "chan3" in self.channels:
                 strains["chan3"] = chan3
+
+            # If the bbhx generator decentered the waveform (merger at t=0),
+            # re-apply exp(-i 2π f t_ref) here so the strain handed downstream
+            # carries the physical reference-time phase. The ground-based
+            # analogue is ProjectOntoDetectors applying time_translate_data
+            # per detector.
+            if sample["waveform"].get("decentered", False):
+                t_arr = np.atleast_1d(
+                    np.asarray(sample["waveform"]["t_ref"], dtype=np.float64)
+                )
+                freqs_re = np.asarray(
+                    sample["waveform"].get(
+                        "freqs", sample["waveform"].get("freq")
+                    )
+                )
+                phasor = np.exp(
+                    -1j * 2.0 * np.pi * t_arr[:, None] * freqs_re[None, :]
+                )
+                for key in list(strains.keys()):
+                    s = np.asarray(strains[key])
+                    p = phasor
+                    if s.ndim == 1:
+                        strains[key] = s * p[0]
+                    elif s.ndim == 2:
+                        if s.shape[0] != p.shape[0] and p.shape[0] == 1:
+                            p = np.broadcast_to(p, (s.shape[0], p.shape[1]))
+                        strains[key] = s * p
 
             # Keep parameter bookkeeping consistent with downstream code.
             parameters["luminosity_distance"] = d_new
