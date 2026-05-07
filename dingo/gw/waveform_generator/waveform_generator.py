@@ -2100,24 +2100,47 @@ class BBHxWaveformGenerator:
     def _decenter_waveform(self, waveform, freqs, t_ref):
         """Multiply by exp(+i 2π f t_ref) so the merger sits at the canonical
         t=0 of the strain time axis. ``freqs`` runs along the last axis of
-        ``waveform``. ``t_ref`` is a scalar or 1-D array of length B; the bbhx
-        output convention is (channels, length) for B=1 (squeezed) or
-        (channels, B, length) for B>1.
+        ``waveform``. ``t_ref`` is a scalar or 1-D array of length B.
+
+        Supports both bbhx native layouts: (channels, length) for B=1 squeezed,
+        (channels, B, length), or (B, channels, length). The batch axis is
+        identified as the one whose size matches ``len(t_ref)`` (or = 1 when
+        ``t_ref`` is a scalar).
         """
         xp = self.waveform_gen.xp if hasattr(self.waveform_gen, "xp") else np
         f = xp.asarray(freqs).reshape(-1)
         t = xp.atleast_1d(xp.asarray(t_ref))
         two_pi_i = 1j * 2.0 * np.pi
+        Nf = f.shape[0]
+        B  = t.shape[0]
+
         if waveform.ndim == 2:
             # (channels, length)
             phasor = xp.exp(two_pi_i * float(t.ravel()[0]) * f)
             return waveform * phasor[None, :]
+
         if waveform.ndim == 3:
-            # bbhx native: (channels, B, length).
-            if t.shape[0] != waveform.shape[1] and t.shape[0] == 1:
-                t = xp.broadcast_to(t, (waveform.shape[1],))
-            phasor = xp.exp(two_pi_i * t[:, None] * f[None, :])  # (B, length)
-            return waveform * phasor[None, :, :]
+            shape = waveform.shape
+            assert shape[-1] == Nf, (
+                f"_decenter_waveform: waveform last axis {shape[-1]} != Nf={Nf}"
+            )
+            # Identify the batch axis by matching dimension to B.
+            if B == 1:
+                # Scalar t_ref; broadcast as a single phasor along the freq axis.
+                phasor = xp.exp(two_pi_i * float(t.ravel()[0]) * f)
+                return waveform * phasor[None, None, :]
+            if shape[0] == B and shape[1] != B:
+                # (B, channels, length)
+                phasor = xp.exp(two_pi_i * t[:, None] * f[None, :])  # (B, Nf)
+                return waveform * phasor[:, None, :]
+            if shape[1] == B:
+                # (channels, B, length)
+                phasor = xp.exp(two_pi_i * t[:, None] * f[None, :])  # (B, Nf)
+                return waveform * phasor[None, :, :]
+            raise ValueError(
+                f"_decenter_waveform: cannot locate batch axis of size {B} "
+                f"in waveform shape {tuple(shape)}"
+            )
         raise ValueError(
             f"_decenter_waveform: unsupported shape {tuple(waveform.shape)}"
         )
