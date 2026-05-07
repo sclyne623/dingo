@@ -2027,6 +2027,12 @@ class BBHxWaveformGenerator:
         # Keep BBHx defaults unless explicitly overridden.
         self.bbhx_t_obs_start_years = float(kwargs.get("bbhx_t_obs_start_years", 0.0))
         self.bbhx_t_obs_end_years = float(kwargs.get("bbhx_t_obs_end_years", 1.0))
+        # When True, ``bbhx_t_obs_start_years`` / ``bbhx_t_obs_end_years`` are
+        # interpreted as ABSOLUTE SSB years (the bbhx ``shift_t_limits=True``
+        # path), and bbhx evaluates the response on tf in absolute SSB time
+        # rather than time-from-merger. Required when the bbhx response
+        # checks the orbit table (which lives in absolute SSB) directly.
+        self.bbhx_shift_t_limits = bool(kwargs.get("bbhx_shift_t_limits", False))
         # If True, multiply the bbhx output by exp(+i 2π f t_ref) so that the
         # merger lands at t=0 in the strain time axis (dingo / lisabeta
         # convention). The carrier exp(-i 2π f t_ref) is exact at numerical
@@ -2467,6 +2473,7 @@ class BBHxWaveformGenerator:
                 t_ref,
                 t_obs_start=self.bbhx_t_obs_start_years,
                 t_obs_end=self.bbhx_t_obs_end_years,
+                shift_t_limits=self.bbhx_shift_t_limits,
                 freqs=freqs,
                 modes=self.mode_list,
                 direct=False,
@@ -2582,6 +2589,7 @@ class BBHxWaveformGenerator:
                 t_ref,
                 t_obs_start=self.bbhx_t_obs_start_years,
                 t_obs_end=self.bbhx_t_obs_end_years,
+                shift_t_limits=self.bbhx_shift_t_limits,
                 freqs=freqs,
                 modes=self.mode_list,
                 direct=False,
