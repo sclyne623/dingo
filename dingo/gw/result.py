@@ -445,7 +445,15 @@ class Result(CoreResult):
             }
             inv_param_key_dict = {v: k for k, v in param_key_dict.items()}
 
-            exclude = {"phi", "ra", "dec", "luminosity_distance", "dist"}
+            # `dist` must stay in theta so ProjectOntoSpaceDetectors gets the
+            # sample's true distance instead of its fiducial d=100 Mpc. With the
+            # fiducial value, <mu,mu> is amplified by (d_true/100)^2 ~ 1e6+ and
+            # its cross-mode (phi-dependent) terms dominate log L(phi), shifting
+            # the synthetic-phase argmax to the wrong band. The 22-mode shortcut
+            # below is insensitive to this (only uses <d,h>, where distance is a
+            # phi-independent constant), which is why the bug was hidden until
+            # approximation_22_mode=False was exercised.
+            exclude = {"phi", "ra", "dec", "luminosity_distance"}
 
             # Canonical parameter names (prior expects these)
             param_keys = [
