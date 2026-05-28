@@ -226,9 +226,40 @@ class GWSignal(object):
         if waveform.ndim == 1:
             waveform = waveform[np.newaxis, :]
 
-        return {
+        strains = {
             ifo: waveform[i].reshape(-1) for i, ifo in enumerate(self.ifo_list)
         }
+
+        # If the generator returned a decentered waveform (merger at t=0), the
+        # training-time DetectorTransform re-applies exp(-i 2π f t_ref) to put the
+        # merger back at the physical t_ref. We must reproduce that here, otherwise
+        # the injected strain is time-shifted by t_ref relative to the network's
+        # training distribution. See detector_transforms.DetectorTransform.
+        if getattr(wfg, "decenter_waveform", False):
+            t_ref_val = theta_extrinsic.get(
+                "t_ref",
+                theta_extrinsic.get(
+                    "geocent_time",
+                    theta_intrinsic.get(
+                        "t_ref",
+                        theta_intrinsic.get(
+                            "geocent_time", wfg.default_t_ref_seconds
+                        ),
+                    ),
+                ),
+            )
+            nf = next(iter(strains.values())).shape[0]
+            freqs = np.asarray(self.data_domain.sample_frequencies, dtype=np.float64)
+            if freqs.shape[0] != nf:
+                # Fall back to the generator's output grid if the data-domain grid
+                # does not line up with the returned waveform length.
+                freqs = np.asarray(
+                    wfg._get_output_frequency_grid(), dtype=np.float64
+                )
+            phasor = np.exp(-1j * 2.0 * np.pi * float(t_ref_val) * freqs)
+            strains = {k: v * phasor for k, v in strains.items()}
+
+        return strains
 
     def signal(self, theta):
         """
