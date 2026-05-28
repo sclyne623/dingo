@@ -2013,7 +2013,8 @@ class BBHxWaveformGenerator:
 
         self.f_ref = f_ref
         self.f_start = f_start
-        self.mode_list = mode_list if mode_list is not None else [(2,2), (2,1), (3,3), (3,2), (4,4), (4,3)]
+        _default_mode_list = [(2,2), (2,1), (3,3), (3,2), (4,4), (4,3)]
+        self.mode_list = [tuple(m) for m in (mode_list if mode_list is not None else _default_mode_list)]
         self.transform = transform
         self.frozenLISA = frozenLISA
         self.use_gpu = use_gpu
