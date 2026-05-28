@@ -197,6 +197,39 @@ class GWSignal(object):
             transforms.append(WhitenAndScaleStrain(self.data_domain.noise_std))
         self.projection_transforms = Compose(transforms)
 
+    def _bbhx_direct_response(self, theta_intrinsic, theta_extrinsic):
+        """Generate the detector-response waveform for a BBHx generator, mirroring
+        the training-time DetectorTransform path so injections match what the
+        network was trained on.
+
+        Returns a dict ``{channel_name: 1d complex array}`` on the data domain.
+        """
+        wfg = self.waveform_generator
+        if getattr(wfg, "gpu_fastpath", False) and getattr(
+            wfg, "backend_native_fused", False
+        ):
+            h = wfg.generate_direct_response_backend_native(
+                theta_intrinsic, theta_extrinsic, catch_waveform_errors=False
+            )
+        else:
+            h = wfg.generate_amp_phase(
+                {**theta_intrinsic, **theta_extrinsic}, catch_waveform_errors=False
+            )
+        waveform = h["waveform"] if isinstance(h, dict) else h
+
+        # Backend array (CuPy / torch) -> numpy.
+        if hasattr(waveform, "get"):
+            waveform = np.asarray(waveform.get())
+        else:
+            waveform = np.asarray(waveform)
+        waveform = np.squeeze(waveform)
+        if waveform.ndim == 1:
+            waveform = waveform[np.newaxis, :]
+
+        return {
+            ifo: waveform[i].reshape(-1) for i, ifo in enumerate(self.ifo_list)
+        }
+
     def signal(self, theta):
         """
         Compute the GW signal for parameters theta.
@@ -232,10 +265,24 @@ class GWSignal(object):
             
             polarizations = self.waveform_generator.generate_amp_phase({**theta_extrinsic,**theta_intrinsic})
         elif isinstance(self.waveform_generator, BBHxWaveformGenerator):
-            # Generate intrinsic modes and apply detector response in transforms.
-            polarizations = self.waveform_generator.generate_amp_phase_m(
-                {**theta_extrinsic, **theta_intrinsic}
-            )
+            # Apply the BBHx-internal detector response here, exactly as training
+            # does (see DetectorTransform in detector_transforms.py). The network
+            # was trained on this response, so injections must reproduce it rather
+            # than going through generate_amp_phase_m + ProjectOntoSpaceDetectors,
+            # which uses a different TDI/response convention and would feed the
+            # network out-of-distribution data.
+            waveform = self._bbhx_direct_response(theta_intrinsic, theta_extrinsic)
+            sample = {
+                "parameters": theta_intrinsic,
+                "extrinsic_parameters": theta_extrinsic,
+                "waveform": waveform,
+            }
+            asd = self.asd
+            if asd is not None:
+                sample["asds"] = asd
+            if self.whiten:
+                sample = WhitenAndScaleStrain(self.data_domain.noise_std)(sample)
+            return sample
         else:
             polarizations = self.waveform_generator.generate_hplus_hcross(theta_intrinsic)
             polarizations = {  # truncation, in case wfg has a larger frequency range
