@@ -261,6 +261,53 @@ class GWSignal(object):
 
         return strains
 
+    def _bbhx_signal_m(self, theta_intrinsic, theta_extrinsic):
+        """Per-azimuthal-m decomposition of the BBHx signal using the BBHx-internal
+        response, consistent with ``signal()`` and the data.
+
+        Each mode (l, m) transforms as ``exp(-i m phase)`` under reference-phase
+        shifts, so we generate the detector response of the modes sharing an
+        azimuthal index m at ``phase=0``; downstream code (e.g. the
+        phase-marginalized likelihood) applies the m-dependent phase. This mirrors
+        ``signal()`` (same ``_bbhx_direct_response`` path, including the re-center),
+        unlike the generate_amp_phase_m + ProjectOntoSpaceDetectors path which uses
+        a different response convention.
+
+        Returns a dict ``{m: {"waveform": {channel: strain}, ...}}``.
+        """
+        wfg = self.waveform_generator
+        full_modes = list(wfg.mode_list)
+
+        groups = {}
+        for lm in full_modes:
+            groups.setdefault(int(lm[1]), []).append(tuple(lm))
+
+        # The decomposition is defined at phase=0; the m-dependent phase factor is
+        # re-applied by the consumer.
+        theta_extrinsic_ref = {**theta_extrinsic, "phase": 0.0, "phi": 0.0}
+
+        m_bins = {}
+        try:
+            for m, modes_m in groups.items():
+                wfg.mode_list = modes_m
+                waveform = self._bbhx_direct_response(
+                    theta_intrinsic, theta_extrinsic_ref
+                )
+                sample = {
+                    "parameters": theta_intrinsic,
+                    "extrinsic_parameters": theta_extrinsic,
+                    "waveform": waveform,
+                }
+                if self.asd is not None:
+                    sample["asds"] = self.asd
+                if self.whiten:
+                    sample = WhitenAndScaleStrain(self.data_domain.noise_std)(sample)
+                m_bins[m] = sample
+        finally:
+            wfg.mode_list = full_modes
+
+        return m_bins
+
     def signal(self, theta):
         """
         Compute the GW signal for parameters theta.
@@ -378,9 +425,11 @@ class GWSignal(object):
             
             pol_lm = self.waveform_generator.generate_amp_phase({**theta_extrinsic,**theta_intrinsic})
         elif isinstance(self.waveform_generator, BBHxWaveformGenerator):
-            pol_lm = self.waveform_generator.generate_amp_phase_m(
-                {**theta_extrinsic, **theta_intrinsic}
-            )
+            # Decompose using the BBHx-internal response (consistent with signal()
+            # and the data), rather than generate_amp_phase_m +
+            # ProjectOntoSpaceDetectors, which applies a different (lisabeta)
+            # response and breaks importance sampling.
+            return self._bbhx_signal_m(theta_intrinsic, theta_extrinsic)
         if isinstance(
             self.waveform_generator, (LISAWaveformGenerator, BBHxWaveformGenerator)
         ):
