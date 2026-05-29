@@ -420,20 +420,17 @@ class StationaryGaussianGWLikelihood(GWSignal, Likelihood):
             # get rho2opt
             rho2opt = rho2opt_const
             for (m, n), c in rho2opt_crossterms.items():
-                if isinstance(
-                    self.waveform_generator,
-                    (LISAWaveformGenerator, BBHxWaveformGenerator),
-                ):
+                if isinstance(self.waveform_generator, LISAWaveformGenerator):
                     rho2opt += (c * np.exp(1j * (n - m) * phase)).real
                 else:
+                    # BBHx (and standard LAL) modes combine as exp(-i m phase);
+                    # see signal()/signal_m validation. The cross term carries
+                    # exp(-i (n - m) phase).
                     rho2opt += (c * np.exp(-1j * (n - m) * phase)).real
             # get kappa2
             kappa2 = 0
             for m in m_vals:
-                if isinstance(
-                    self.waveform_generator,
-                    (LISAWaveformGenerator, BBHxWaveformGenerator),
-                ):
+                if isinstance(self.waveform_generator, LISAWaveformGenerator):
                     kappa2 += (kappa2_modes[m] * np.exp(1j * m * phase)).real
                 else:
                     kappa2 += (kappa2_modes[m] * np.exp(-1j * m * phase)).real
