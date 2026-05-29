@@ -535,6 +535,63 @@ class StationaryGaussianGWLikelihood(GWSignal, Likelihood):
 
         return out
 
+    def log_likelihood_batched(self, theta_df, chunk_size=2000):
+        """Vectorized, GPU-batched log_likelihood for BBHx.
+
+        Returns an array of shape ``(len(theta_df),)``. Generates the BBHx
+        detector response for a batch of samples in one GPU call per chunk and
+        computes the inner products vectorized -- same math as ``log_likelihood``,
+        applied row by row, but without multiprocessing (fork + CUDA unsafe).
+        """
+        if not isinstance(self.waveform_generator, BBHxWaveformGenerator):
+            raise NotImplementedError(
+                "Batched log_likelihood is only implemented for BBHxWaveformGenerator."
+            )
+        if self.time_marginalization or self.phase_marginalization:
+            raise NotImplementedError(
+                "Batched log_likelihood not implemented with marginalization."
+            )
+        if self.calibration_marginalization_kwargs:
+            raise NotImplementedError(
+                "Batched log_likelihood not implemented with calibration marginalization."
+            )
+
+        d = self.whitened_strains
+        min_idx = self.data_domain.min_idx
+        dconj = {ch: np.conj(v)[None, min_idx:] for ch, v in d.items()}
+        out = np.empty(len(theta_df))
+
+        for start in range(0, len(theta_df), chunk_size):
+            chunk = theta_df.iloc[start : start + chunk_size]
+            theta_intrinsic = {
+                col: chunk[col].to_numpy(dtype=float) for col in chunk.columns
+            }
+            mu = self._bbhx_signal_batched(theta_intrinsic, {})
+            b = len(chunk)
+
+            rho2opt = np.zeros(b, dtype=np.float64)
+            kappa2 = np.zeros(b, dtype=np.float64)
+            for ch in d:
+                mu_ch = mu[ch][:, min_idx:]
+                rho2opt += np.sum(np.abs(mu_ch) ** 2, axis=1)
+                kappa2 += np.sum(dconj[ch] * mu_ch, axis=1).real
+
+            out[start : start + b] = self.log_Zn + kappa2 - 0.5 * rho2opt
+
+        return out
+
+    def log_likelihood_multi(self, theta, num_processes=1):
+        """Route BBHx through the GPU-batched path; fall back to the base
+        multiprocessing implementation otherwise.
+
+        ``num_processes`` is ignored for BBHx (single GPU + fork unsafe; one GPU
+        gains nothing from extra processes). The base class still uses it for
+        non-GPU likelihoods.
+        """
+        if isinstance(self.waveform_generator, BBHxWaveformGenerator):
+            return self.log_likelihood_batched(theta)
+        return super().log_likelihood_multi(theta, num_processes=num_processes)
+
     def _log_likelihood_phase_marginalized(self, theta):
         """
 
