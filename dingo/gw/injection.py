@@ -397,6 +397,50 @@ class GWSignal(object):
 
         return m_bins
 
+    def _bbhx_signal_batched(self, theta_intrinsic, theta_extrinsic):
+        """Batched BBHx detector response for B samples (each with its own
+        phase / extrinsics). Returns ``{channel: (B, nf)}`` (whitened if
+        ``self.whiten``). Mirrors ``signal()`` / ``_bbhx_direct_response`` over
+        a batch in a single GPU call.
+        """
+        wfg = self.waveform_generator
+        B = len(np.atleast_1d(next(iter(theta_intrinsic.values()))))
+        n_chan = len(self.ifo_list)
+        freqs = np.asarray(self.data_domain.sample_frequencies, dtype=np.float64)
+        nf = freqs.shape[0]
+
+        te = dict(theta_extrinsic)
+        # Ensure a phase argument is available; default to 0 if neither dict has it.
+        if all(k not in te and k not in theta_intrinsic for k in ("phase", "phi")):
+            te["phase"] = np.zeros(B)
+            te["phi"] = np.zeros(B)
+
+        h = wfg.generate_direct_response_backend_native(
+            theta_intrinsic, te, catch_waveform_errors=False
+        )
+        wf = h["waveform"] if isinstance(h, dict) else h
+        wf = self._to_B_chan_nf(wf, B, n_chan, nf)
+
+        if getattr(wfg, "decenter_waveform", False):
+            t_ref = te.get(
+                "geocent_time",
+                theta_intrinsic.get(
+                    "geocent_time", getattr(wfg, "default_t_ref_seconds", 0.0)
+                ),
+            )
+            t_ref = np.atleast_1d(np.asarray(t_ref, dtype=np.float64))
+            phasor = np.exp(-1j * 2.0 * np.pi * t_ref[:, None] * freqs[None, :])
+            wf = wf * phasor[:, None, :]
+
+        strains = {ifo: wf[:, i, :] for i, ifo in enumerate(self.ifo_list)}
+        if self.whiten and self.asd is not None:
+            ns = self.data_domain.noise_std
+            strains = {
+                ifo: strains[ifo] / (np.asarray(self.asd[ifo]) * ns)
+                for ifo in self.ifo_list
+            }
+        return strains
+
     def signal(self, theta):
         """
         Compute the GW signal for parameters theta.
