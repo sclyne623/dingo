@@ -459,6 +459,82 @@ class StationaryGaussianGWLikelihood(GWSignal, Likelihood):
 
         return log_likelihoods
 
+    def log_likelihood_phase_grid_batched(
+        self, theta_df, phases=None, chunk_size=2000
+    ):
+        """Vectorized, GPU-batched version of the mode-decomposed phase grid.
+
+        Computes ``log_likelihood`` over the phase grid for every row of
+        ``theta_df`` at once, generating waveforms in batched GPU calls
+        (``signal_m`` per chunk) and evaluating the phase grid as array math.
+        Returns an array of shape ``(len(theta_df), len(phases))`` matching
+        ``log_likelihood_phase_grid`` applied row by row.
+
+        Only supported for BBHx (mode-decomposed, MFD/uniform domain). The
+        single-sample ``log_likelihood_phase_grid`` remains the reference.
+        """
+        if not isinstance(self.waveform_generator, BBHxWaveformGenerator):
+            raise NotImplementedError(
+                "Batched phase grid is only implemented for BBHxWaveformGenerator."
+            )
+        if self.phase_marginalization or self.time_marginalization:
+            raise NotImplementedError(
+                "Batched phase grid not implemented with marginalization."
+            )
+        if phases is None:
+            phases = self.phase_grid
+        phases = np.asarray(phases)
+
+        d = self.whitened_strains
+        min_idx = self.data_domain.min_idx
+        # Reduce over channels and frequency bins (>= min_idx) for batched modes.
+        dconj = {ch: np.conj(v)[None, min_idx:] for ch, v in d.items()}
+
+        # Map inference columns -> generator parameter names.
+        out = np.empty((len(theta_df), len(phases)), dtype=np.float64)
+        for start in range(0, len(theta_df), chunk_size):
+            chunk = theta_df.iloc[start : start + chunk_size]
+            theta_intrinsic = {col: chunk[col].to_numpy(dtype=float) for col in chunk.columns}
+
+            pol_m = self._bbhx_signal_m_batched(theta_intrinsic, {})
+            m_vals = sorted(pol_m.keys())
+
+            # kappa2_modes[m] = (d | mu_m), rho2opt_const = sum_m (mu_m | mu_m)
+            kappa2_modes = {}
+            rho2opt_const = 0.0
+            for m in m_vals:
+                mu_m = pol_m[m]
+                kappa2_modes[m] = sum(
+                    np.sum(dconj[ch] * mu_m[ch][:, min_idx:], axis=1) for ch in d
+                )
+                rho2opt_const = rho2opt_const + sum(
+                    np.sum(np.abs(mu_m[ch][:, min_idx:]) ** 2, axis=1) for ch in d
+                )
+            # cross terms (m, n): 2 * sum_ch (mu_m | mu_n)
+            crossterms = {}
+            for i, m in enumerate(m_vals):
+                for n in m_vals[i + 1 :]:
+                    crossterms[(m, n)] = 2 * sum(
+                        np.sum(
+                            np.conj(pol_m[m][ch][:, min_idx:]) * pol_m[n][ch][:, min_idx:],
+                            axis=1,
+                        )
+                        for ch in d
+                    )
+
+            # Phase grid (b, G).
+            ph = phases[None, :]
+            kappa2 = np.zeros((len(chunk), len(phases)))
+            for m in m_vals:
+                kappa2 += (kappa2_modes[m][:, None] * np.exp(-1j * m * ph)).real
+            rho2opt = np.real(rho2opt_const)[:, None] * np.ones((1, len(phases)))
+            for (m, n), c in crossterms.items():
+                rho2opt += (c[:, None] * np.exp(-1j * (n - m) * ph)).real
+
+            out[start : start + len(chunk)] = self.log_Zn + kappa2 - 0.5 * rho2opt
+
+        return out
+
     def _log_likelihood_phase_marginalized(self, theta):
         """
 

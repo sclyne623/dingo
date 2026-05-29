@@ -308,6 +308,92 @@ class GWSignal(object):
 
         return m_bins
 
+    @staticmethod
+    def _to_B_chan_nf(wf, B, n_chan, nf):
+        """Normalize a batched BBHx response array to shape (B, n_chan, nf).
+
+        The backend may return (B, n_chan, nf) or (n_chan, B, nf); the freq axis
+        is identified as the one of length nf, and B vs n_chan by size.
+        """
+        wf = np.asarray(wf.get()) if hasattr(wf, "get") else np.asarray(wf)
+        if wf.ndim == 2:
+            # (n_chan, nf) for a single sample.
+            if wf.shape[-1] != nf:
+                raise ValueError(f"Unexpected batched response shape {wf.shape}, nf={nf}")
+            return wf[np.newaxis, ...] if B == 1 else wf.reshape(B, n_chan, nf)
+        if wf.ndim != 3:
+            raise ValueError(f"Unexpected batched response ndim {wf.ndim} (shape {wf.shape})")
+        if wf.shape[-1] != nf:
+            # Move the freq axis (size nf) to the end.
+            ax = [i for i, s in enumerate(wf.shape) if s == nf]
+            if not ax:
+                raise ValueError(f"No freq axis of size {nf} in shape {wf.shape}")
+            wf = np.moveaxis(wf, ax[-1], -1)
+        # Now (?, ?, nf); first two are some permutation of (B, n_chan).
+        if wf.shape[0] == B and wf.shape[1] == n_chan:
+            return wf
+        if wf.shape[0] == n_chan and wf.shape[1] == B:
+            return np.swapaxes(wf, 0, 1)
+        if B == n_chan:  # ambiguous; assume (B, n_chan, nf)
+            return wf
+        raise ValueError(
+            f"Cannot map batched response shape {wf.shape} to (B={B}, n_chan={n_chan}, nf={nf})"
+        )
+
+    def _bbhx_signal_m_batched(self, theta_intrinsic, theta_extrinsic):
+        """Batched per-azimuthal-m decomposition for BBHx.
+
+        ``theta_intrinsic`` / ``theta_extrinsic`` values are length-B arrays. Returns
+        ``{m: {channel: (B, nf) complex}}`` (whitened if self.whiten), computed in one
+        GPU call per m-group. Mirrors ``_bbhx_signal_m`` over a batch.
+        """
+        wfg = self.waveform_generator
+        full_modes = list(wfg.mode_list)
+        groups = {}
+        for lm in full_modes:
+            groups.setdefault(int(lm[1]), []).append(tuple(lm))
+
+        B = len(np.atleast_1d(next(iter(theta_intrinsic.values()))))
+        n_chan = len(self.ifo_list)
+        freqs = np.asarray(self.data_domain.sample_frequencies, dtype=np.float64)
+        nf = freqs.shape[0]
+
+        te = {**theta_extrinsic, "phase": np.zeros(B), "phi": np.zeros(B)}
+
+        m_bins = {}
+        try:
+            for m, modes_m in groups.items():
+                wfg.mode_list = modes_m
+                h = wfg.generate_direct_response_backend_native(
+                    theta_intrinsic, te, catch_waveform_errors=False
+                )
+                wf = h["waveform"] if isinstance(h, dict) else h
+                wf = self._to_B_chan_nf(wf, B, n_chan, nf)  # (B, n_chan, nf)
+
+                if getattr(wfg, "decenter_waveform", False):
+                    t_ref = te.get(
+                        "geocent_time",
+                        theta_intrinsic.get(
+                            "geocent_time", getattr(wfg, "default_t_ref_seconds", 0.0)
+                        ),
+                    )
+                    t_ref = np.atleast_1d(np.asarray(t_ref, dtype=np.float64))
+                    phasor = np.exp(-1j * 2.0 * np.pi * t_ref[:, None] * freqs[None, :])
+                    wf = wf * phasor[:, None, :]
+
+                strains = {ifo: wf[:, i, :] for i, ifo in enumerate(self.ifo_list)}
+                if self.whiten and self.asd is not None:
+                    ns = self.data_domain.noise_std
+                    strains = {
+                        ifo: strains[ifo] / (np.asarray(self.asd[ifo]) * ns)
+                        for ifo in self.ifo_list
+                    }
+                m_bins[m] = strains
+        finally:
+            wfg.mode_list = full_modes
+
+        return m_bins
+
     def signal(self, theta):
         """
         Compute the GW signal for parameters theta.
