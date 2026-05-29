@@ -330,12 +330,15 @@ class GWSignal(object):
                 raise ValueError(f"No freq axis of size {nf} in shape {wf.shape}")
             wf = np.moveaxis(wf, ax[-1], -1)
         # Now (?, ?, nf); first two are some permutation of (B, n_chan).
-        if wf.shape[0] == B and wf.shape[1] == n_chan:
-            return wf
-        if wf.shape[0] == n_chan and wf.shape[1] == B:
-            return np.swapaxes(wf, 0, 1)
+        # BBHx may emit more channels than the model uses (e.g. A/E/T for a 2-channel
+        # setup) — slice down to the first n_chan, matching the per-sample path.
+        n_axis0, n_axis1 = wf.shape[0], wf.shape[1]
+        if n_axis0 == B and n_axis1 >= n_chan:
+            return wf[:, :n_chan, :]
+        if n_axis1 == B and n_axis0 >= n_chan:
+            return np.swapaxes(wf, 0, 1)[:, :n_chan, :]
         if B == n_chan:  # ambiguous; assume (B, n_chan, nf)
-            return wf
+            return wf[:, :n_chan, :]
         raise ValueError(
             f"Cannot map batched response shape {wf.shape} to (B={B}, n_chan={n_chan}, nf={nf})"
         )
