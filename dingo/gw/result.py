@@ -446,7 +446,11 @@ class Result(CoreResult):
             }
             inv_param_key_dict = {v: k for k, v in param_key_dict.items()}
 
-            exclude = {"phi", "ra", "dec", "luminosity_distance", "dist"}
+            # phi is the synthetic-phase target (not yet sampled); ra/dec are
+            # ground-based sky params not applicable to LISA. dist MUST be
+            # included -- excluding it silently defaulted the synthetic-phase
+            # likelihood to 100 Mpc via the generator's split_off defaults.
+            exclude = {"phi", "ra", "dec", "luminosity_distance"}
 
             # Canonical parameter names (prior expects these)
             param_keys = [
