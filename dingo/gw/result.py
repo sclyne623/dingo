@@ -18,6 +18,7 @@ from dingo.gw.domains import build_domain
 from dingo.gw.gwutils import get_extrinsic_prior_dict, get_window_factor
 from dingo.gw.likelihood import StationaryGaussianGWLikelihood
 from dingo.gw.prior import build_prior_with_defaults
+from dingo.gw.waveform_generator.waveform_generator import BBHxWaveformGenerator
 
 
 RANDOM_STATE = 150914
@@ -519,11 +520,20 @@ class Result(CoreResult):
         else:
             self.likelihood.phase_grid = phases
 
-            phase_log_posterior = apply_func_with_multiprocessing(
-                self.likelihood.log_likelihood_phase_grid,
-                theta_lisa.iloc[within_prior],
-                num_processes=num_processes,
-            )
+            if isinstance(self.likelihood.waveform_generator, BBHxWaveformGenerator):
+                # GPU-batched: generate waveforms in batched GPU calls and evaluate
+                # the phase grid vectorized. Avoids multiprocessing entirely (fork +
+                # CUDA is unsafe, and a single GPU gains nothing from extra processes).
+                chunk_size = self.synthetic_phase_kwargs.get("batch_size", 2000)
+                phase_log_posterior = self.likelihood.log_likelihood_phase_grid_batched(
+                    theta_lisa.iloc[within_prior], phases=phases, chunk_size=chunk_size
+                )
+            else:
+                phase_log_posterior = apply_func_with_multiprocessing(
+                    self.likelihood.log_likelihood_phase_grid,
+                    theta_lisa.iloc[within_prior],
+                    num_processes=num_processes,
+                )
 
         phase_posterior = np.exp(
             phase_log_posterior - np.amax(phase_log_posterior, axis=1, keepdims=True)
