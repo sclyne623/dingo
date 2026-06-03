@@ -1355,3 +1355,123 @@ class UpdateFrequencyRange(object):
         sample["drop_token_mask"] = np.logical_or(mask, sample["drop_token_mask"])
 
         return sample
+
+
+class MultibandStrainTokenization(object):
+    """Per-band tokenizer for a MultibandedFrequencyDomain.
+
+    The lifted `StrainTokenization` uses a single global stride of
+    `token_size` bins across the whole concatenated MFD array, which requires
+    every band's bin count to be divisible by `token_size` (so no token spans a
+    band boundary where delta_f changes). For MFD grids whose per-band bin
+    counts are coprime (e.g. the LISA 8-week grid: [2000, 3750, 5000, 2500,
+    3125, 1562, 781, 781, 390], GCD 1) no global token_size > 1 exists.
+
+    This transform instead tokenizes **each band independently**: within a band
+    delta_f is constant, so any token_size is valid, and band boundaries never
+    fall inside a token by construction. The last token of each band is
+    zero-padded up to `token_size` (typically a handful of bins total).
+
+    Output matches `StrainTokenization` exactly so the downstream model is
+    unchanged:
+        waveform        -> [..., num_tokens, num_channels * token_size]
+        position        -> [..., num_tokens, 3]   (f_min, f_max, detector)
+        drop_token_mask -> [..., num_tokens]      (bool, True = ignore)
+    with num_tokens = num_blocks * sum_b ceil(N_b / token_size).
+    """
+
+    def __init__(self, domain, token_size: int, print_output: bool = True):
+        if not isinstance(domain, MultibandedFrequencyDomain):
+            raise ValueError(
+                "MultibandStrainTokenization requires a MultibandedFrequencyDomain; "
+                f"got {type(domain).__name__}. Use StrainTokenization for uniform domains."
+            )
+        self.token_size = int(token_size)
+        self.print_output = print_output
+
+        # Per-band bin counts.
+        counts = getattr(domain, "_num_bins_bands", None)
+        if counts is None:
+            counts = getattr(domain, "num_bins_bands", None)
+        if counts is None:
+            raise AttributeError(
+                "Could not read per-band bin counts from the domain "
+                "(_num_bins_bands / num_bins_bands)."
+            )
+        counts = np.asarray(counts).astype(int)
+
+        sf = np.asarray(domain.sample_frequencies)
+        min_idx = int(getattr(domain, "min_idx", 0))
+        sf = sf[min_idx:]
+        if counts.sum() != len(sf):
+            raise ValueError(
+                f"Sum of per-band bin counts ({counts.sum()}) != number of "
+                f"frequency bins above min_idx ({len(sf)}); cannot tokenize per band."
+            )
+        band_freqs = np.split(sf, np.cumsum(counts)[:-1])
+
+        # Build the gather/pad plan and per-token f_min/f_max.
+        gather, pad_mask, f_min, f_max = [], [], [], []
+        offset = 0
+        for N_b, freqs in zip(counts, band_freqs):
+            n_tok_b = int(np.ceil(N_b / self.token_size))
+            for t in range(n_tok_b):
+                lo = t * self.token_size
+                hi = min(lo + self.token_size, N_b)
+                f_min.append(freqs[lo])
+                f_max.append(freqs[hi - 1])
+                for i in range(self.token_size):
+                    if lo + i < N_b:
+                        gather.append(offset + lo + i)
+                        pad_mask.append(False)
+                    else:
+                        gather.append(0)        # placeholder; zeroed in __call__
+                        pad_mask.append(True)
+            offset += N_b
+
+        self.gather_idx = np.asarray(gather, dtype=int)
+        self.pad_mask = np.asarray(pad_mask, dtype=bool)
+        self.f_min_per_token = np.asarray(f_min)
+        self.f_max_per_token = np.asarray(f_max)
+        self.num_tokens_per_detector = len(self.f_min_per_token)
+        self.num_padded_bins = int(self.pad_mask.sum())
+        if self.print_output:
+            print(
+                f"MultibandStrainTokenization: token_size={self.token_size}, "
+                f"{self.num_tokens_per_detector} tokens/detector, "
+                f"{self.num_padded_bins} zero-padded bins."
+            )
+
+    def __call__(self, input_sample):
+        sample = input_sample.copy()
+        strain = np.asarray(sample["waveform"])  # [..., num_blocks, num_channels, num_bins]
+        lead = strain.shape[:-3]
+        num_blocks, num_channels = strain.shape[-3], strain.shape[-2]
+        token_size = self.token_size
+        n_tok = self.num_tokens_per_detector
+
+        # Gather bins into the (padded) per-band token layout, then zero the pads.
+        strain = strain[..., self.gather_idx]
+        strain[..., self.pad_mask] = 0
+
+        # [..., num_blocks, num_channels, n_tok, token_size]
+        strain = strain.reshape(*lead, num_blocks, num_channels, n_tok, token_size)
+        # -> [..., num_blocks, n_tok, num_channels, token_size]
+        strain = np.moveaxis(strain, -2, -3)
+        # -> [..., num_blocks * n_tok, num_channels * token_size]
+        sample["waveform"] = strain.reshape(
+            *lead, num_blocks * n_tok, num_channels * token_size
+        )
+
+        # Detector index per token, from the asds keys (block-major ordering).
+        det_idx = np.array(
+            [DETECTOR_DICT[k] for k in input_sample["asds"].keys()], dtype=strain.dtype
+        )
+        num_tokens = num_blocks * n_tok
+        position = np.empty((*lead, num_tokens, 3), dtype=strain.dtype)
+        position[..., 0] = np.tile(self.f_min_per_token, num_blocks)
+        position[..., 1] = np.tile(self.f_max_per_token, num_blocks)
+        position[..., 2] = np.repeat(det_idx, n_tok)
+        sample["position"] = position
+        sample["drop_token_mask"] = np.zeros((*lead, num_tokens), dtype=bool)
+        return sample

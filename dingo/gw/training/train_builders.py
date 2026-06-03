@@ -24,6 +24,7 @@ from dingo.gw.transforms import (
     SampleExtrinsicParameters,
     GetDetectorTimes,
     StrainTokenization,
+    MultibandStrainTokenization,
 )
 from dingo.gw.noise.asd_dataset import ASDDataset
 from dingo.gw.prior import default_inference_parameters
@@ -273,22 +274,36 @@ def set_train_transforms(
     # by adding a `data: tokenization:` block to the training YAML. When absent,
     # the original SVD/reduced-basis path is used unchanged.
     #
-    # TODO(LISA): token boundaries must align with the multibanded-domain nodes;
-    # StrainTokenization asserts this via check_compatibility_of_mfd_nodes_with_
-    # tokenization. Choose token_size/num_tokens compatible with your MFD bands.
+    # Two tokenizers are available:
+    #   * StrainTokenization (global stride) -- requires every MFD band's bin
+    #     count to be divisible by token_size (boundaries must fall between
+    #     tokens). Fine for uniform domains / aligned MFDs.
+    #   * MultibandStrainTokenization (per_band: true) -- tokenizes each band
+    #     independently, so boundaries always align (last token per band is
+    #     zero-padded). Use this when band counts are coprime, e.g. the LISA
+    #     8-week grid.
     if "tokenization" in data_settings:
         tok = data_settings["tokenization"]
-        transforms.append(
-            StrainTokenization(
-                domain=domain,
-                num_tokens_per_block=tok.get("num_tokens", None),
-                token_size=tok.get("token_size", None),
-                drop_last_token=tok.get("drop_last_token", False),
-                normalize_frequency=tok.get(
-                    "normalize_frequency_for_positional_encoding", False
-                ),
+        if tok.get("per_band", False):
+            transforms.append(
+                MultibandStrainTokenization(
+                    domain=domain,
+                    token_size=tok["token_size"],
+                    print_output=print_output,
+                )
             )
-        )
+        else:
+            transforms.append(
+                StrainTokenization(
+                    domain=domain,
+                    num_tokens_per_block=tok.get("num_tokens", None),
+                    token_size=tok.get("token_size", None),
+                    drop_last_token=tok.get("drop_last_token", False),
+                    normalize_frequency=tok.get(
+                        "normalize_frequency_for_positional_encoding", False
+                    ),
+                )
+            )
         selected_keys.append("position")
         selected_keys.append("drop_token_mask")
 

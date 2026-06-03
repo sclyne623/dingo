@@ -30,14 +30,13 @@ data:
     - chan2
   # NEW: tokenization for the transformer embedding.
   tokenization:
-    # token_size = number of frequency bins per token. ~20k bins / 16 -> ~1250
-    # tokens per channel. TODO(LISA): token boundaries MUST align with your
-    # multibanded-domain band nodes; StrainTokenization asserts this via
-    # check_compatibility_of_mfd_nodes_with_tokenization. If it trips, pick a
-    # token_size compatible with your MFD band structure (or use num_tokens).
-    token_size: 16
-    drop_last_token: true
-    normalize_frequency_for_positional_encoding: false
+    # per_band=true uses MultibandStrainTokenization, which tokenizes each MFD
+    # band independently (boundaries always align; last token per band is
+    # zero-padded). REQUIRED for the LISA 8-week grid, whose per-band bin counts
+    # [2000,3750,5000,2500,3125,1562,781,781,390] are coprime, so the global
+    # StrainTokenization (per_band=false) has no valid token_size > 1.
+    per_band: true
+    token_size: 16   # -> ~1247 tokens/channel, ~63 zero-pad bins (negligible)
   extrinsic_prior:
     dist: bilby.core.prior.Uniform(minimum=20e4, maximum=30e4)
     lambda: bilby.core.prior.Uniform(minimum=-np.pi, maximum=np.pi, boundary="periodic")

@@ -24,10 +24,18 @@ transformer encoder that has no linear n-width bottleneck.
 ## Wiring added (this fork's files)
 
 1. `dingo/gw/transforms/__init__.py` — export `StrainTokenization`.
-2. `dingo/gw/training/train_builders.py` (`set_train_transforms`) — appends
-   `StrainTokenization` and adds `position` / `drop_token_mask` to
-   `selected_keys` when a `data: tokenization:` block is present. The data
-   pipeline before it (response → whiten → repackage) is unchanged.
+2. `dingo/gw/training/train_builders.py` (`set_train_transforms`) — appends a
+   tokenizer and adds `position` / `drop_token_mask` to `selected_keys` when a
+   `data: tokenization:` block is present. The data pipeline before it
+   (response → whiten → repackage) is unchanged. Two tokenizers:
+   - `StrainTokenization` (global stride) — needs every MFD band's bin count
+     divisible by `token_size`.
+   - `MultibandStrainTokenization` (`per_band: true`) — tokenizes each band
+     independently; boundaries always align (last token per band zero-padded).
+     **Required for the LISA 8-week grid**, whose band counts
+     `[2000,3750,5000,2500,3125,1562,781,781,390]` are coprime (GCD 1), so no
+     global `token_size > 1` exists. At `token_size=16` → 1247 tokens/channel,
+     63 zero-pad bins out of 19889. (Added in `tokenization_transforms.py`.)
 3. `dingo/core/nn/nsf.py` — `TransformerEmbeddingAdapter` (drops the
    `(embedding, logging_info)` tuple so it matches this fork's single-return
    `FlowWrapper` convention) + dispatch in
