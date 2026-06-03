@@ -1,26 +1,31 @@
-"""Fast smoke test for the transformer-embedding wiring.
+"""Smoke test for the transformer-embedding wiring.
 
-Run this in an environment where `torch` and `dingo` are installed (it does NOT
-need lisabeta or any data files). It exercises the parts that could not be
-runtime-tested in the sandbox where the integration was written.
+Run in an environment where `torch` and `dingo` are installed.
 
+Default (synthetic, no data / no lisabeta needed):
     python examples/smoke_test_transformer_embedding.py
 
-Stage A (critical): build the transformer-embedding normalizing flow from
-synthetic *tokenized* tensors and run one forward + backward. This validates:
-  - autocomplete_model_kwargs (transformer branch: input/context dims)
-  - the create_nsf_with_rb_projection_embedding_net dispatch on transformer_kwargs
-  - TransformerEmbeddingAdapter (tuple -> single-tensor return)
-  - TransformerModel.forward(x, position, src_key_padding_mask)
-  - the flow context wiring and a backward pass
+  Stage A (critical): build the transformer-embedding normalizing flow from
+  synthetic *tokenized* tensors and run one forward + backward. Validates
+  autocomplete_model_kwargs (transformer branch), the
+  create_nsf_with_rb_projection_embedding_net dispatch, TransformerEmbeddingAdapter,
+  TransformerModel.forward, and the flow context wiring.
 
-Stage B (best-effort): run StrainTokenization on a synthetic uniform-domain
-sample and print the produced shapes, so you can confirm the transform output
-matches what the model consumes. Uses a UniformFrequencyDomain to avoid the
-multibanded-node/token-alignment constraint (that is a separate TODO for your
-real MFD grid).
+  Stage B (best-effort): run StrainTokenization on a synthetic uniform domain and
+  print/assert the output shapes (imported directly from the submodule to avoid
+  the lisabeta/GSL import chain in dingo.gw.transforms.__init__).
+
+Full pipeline mode (needs your real dataset + lisabeta/GSL working):
+    python examples/smoke_test_transformer_embedding.py --full examples/transformer_lisa_train.yaml [--n 2]
+
+  Loads N waveforms from the config's waveform_dataset_path, builds the REAL
+  set_train_transforms (LISA response -> whiten -> repackage -> StrainTokenization)
+  and prints the tokenized sample shapes. This is the test that exercises your
+  actual multibanded grid and will surface the MFD/token-alignment constraint.
+  A dummy parameter standardization is injected so it does NOT run the slow
+  standardization sweep -- it only checks shapes / the tokenization assert.
 """
-import copy
+import argparse
 import traceback
 
 import numpy as np
@@ -38,14 +43,13 @@ def stage_a():
     num_tokens = num_blocks * n_tok_per_block
     num_features = num_channels * num_bins_per_token
 
-    # Synthetic tokenized batch (mimics StrainTokenization output, batched).
     waveform = torch.randn(batch, num_tokens, num_features)
     position = torch.zeros(batch, num_tokens, 3)
-    position[..., 0] = torch.linspace(1e-4, 1e-1, num_tokens)        # f_min per token
-    position[..., 1] = position[..., 0] + 1e-4                       # f_max per token
-    position[:, :n_tok_per_block, 2] = 0                             # block 0 (chan1)
-    position[:, n_tok_per_block:, 2] = 1                             # block 1 (chan2)
-    mask = torch.zeros(batch, num_tokens, dtype=torch.bool)         # no tokens dropped
+    position[..., 0] = torch.linspace(1e-4, 1e-1, num_tokens)
+    position[..., 1] = position[..., 0] + 1e-4
+    position[:, :n_tok_per_block, 2] = 0
+    position[:, n_tok_per_block:, 2] = 1
+    mask = torch.zeros(batch, num_tokens, dtype=torch.bool)
     theta = torch.randn(batch, n_params)
 
     embedding_kwargs = {
@@ -72,7 +76,6 @@ def stage_a():
         "posterior_kwargs": posterior_kwargs,
     }
 
-    # autocomplete_model_kwargs uses an *unbatched* sample (like wfd[0]).
     data_sample = [theta[0], waveform[0], position[0], mask[0]]
     autocomplete_model_kwargs(model_kwargs, data_sample)
     print(
@@ -99,15 +102,12 @@ def stage_a():
 
 def stage_b():
     print("\n=== STAGE B: StrainTokenization shape check (uniform domain) ===")
-    # Import directly from the submodules to avoid dingo.gw.transforms.__init__,
-    # which chains through detector_transforms -> lisabeta (needs GSL). This lets
-    # Stage B run even when the lisabeta/GSL runtime is not set up.
     from dingo.gw.domains.build_domain import build_domain
     from dingo.gw.transforms.tokenization_transforms import StrainTokenization
 
     domain = build_domain({"type": "FD", "f_min": 0.0, "f_max": 0.01, "delta_f": 1e-5})
     num_bins = len(domain.sample_frequencies) - domain.min_idx
-    strain = np.random.randn(2, 3, num_bins).astype(np.float64)  # [blocks, channels, bins]
+    strain = np.random.randn(2, 3, num_bins).astype(np.float64)
     sample = {"waveform": strain, "asds": {"chan1": None, "chan2": None}}
 
     tok = StrainTokenization(domain=domain, token_size=16, drop_last_token=True,
@@ -124,21 +124,98 @@ def stage_b():
     print("  STAGE B PASS")
 
 
+def _print_domain_bands(domain):
+    """Print multibanded-domain band structure to help choose a token_size that
+    keeps band nodes between tokens (the StrainTokenization MFD constraint)."""
+    print(f"  domain: {type(domain).__name__}")
+    for attr in ("nodes", "nodes_indices", "_nodes_indices", "delta_f_bands",
+                 "_delta_f_bands", "num_bins_bands", "_num_bins_bands"):
+        v = getattr(domain, attr, None)
+        if v is not None:
+            arr = np.asarray(v)
+            tail = " ..." if arr.size > 16 else ""
+            print(f"    {attr} = {arr.ravel()[:16]}{tail}")
+    sf = getattr(domain, "sample_frequencies", None)
+    if sf is not None:
+        print(f"    num bins (full) = {len(sf)}, min_idx = {getattr(domain, 'min_idx', '?')}")
+
+
+def full_mode(config_path, n=2):
+    print(f"\n=== FULL: real set_train_transforms on {config_path} ===")
+    import yaml
+    from dingo.gw.training.train_builders import build_dataset, set_train_transforms
+
+    with open(config_path) as f:
+        cfg = yaml.safe_load(f)
+    data_settings = cfg["data"]
+    on_fly = bool(cfg.get("local", {}).get("on_fly", False))
+    asd_path = cfg["training"]["stage_0"]["asd_dataset_path"]
+
+    if "tokenization" not in data_settings:
+        print("  WARNING: config has no `data: tokenization:` block -> this would "
+              "test the SVD/RB path, not the transformer.")
+
+    # Inject a dummy parameter standardization so set_train_transforms skips the
+    # slow standardization sweep (we only care about shapes / the MFD assert).
+    params = list(data_settings.get("inference_parameters", [])) + list(
+        data_settings.get("context_parameters", [])
+    )
+    data_settings.setdefault(
+        "standardization",
+        {"mean": {p: 0.0 for p in params}, "std": {p: 1.0 for p in params}},
+    )
+
+    print("  loading waveform dataset ...")
+    wfd = build_dataset(data_settings, on_fly=on_fly)
+    print(f"  dataset: {len(wfd)} samples")
+    _print_domain_bands(wfd.domain)
+
+    try:
+        set_train_transforms(wfd, data_settings, asd_path, print_output=False)
+    except AssertionError as e:
+        print("\n  !! MFD/token-alignment assert tripped while building transforms:")
+        print(f"     {e}")
+        print("  -> pick a token_size (or num_tokens) so band nodes land between "
+              "tokens; use the band indices printed above.")
+        raise
+
+    for i in range(n):
+        sample = wfd[i]
+        print(f"  sample[{i}]: {len(sample)} tensors (order = selected_keys)")
+        for j, t in enumerate(sample):
+            shp = getattr(t, "shape", None)
+            dt = getattr(t, "dtype", type(t).__name__)
+            print(f"     [{j}] shape={tuple(shp) if shp is not None else '-'} dtype={dt}")
+    print("  FULL PASS -- tokenized shapes look consistent; ready for a short train.")
+
+
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--full", metavar="CONFIG_YAML", default=None,
+                        help="Run the real pipeline on the dataset in this config.")
+    parser.add_argument("--n", type=int, default=2, help="Number of samples to inspect in --full.")
+    args = parser.parse_args()
+
     torch.manual_seed(0)
     np.random.seed(0)
-    ok = True
-    try:
-        stage_a()
-    except Exception:
-        ok = False
-        print("  STAGE A FAILED:")
-        traceback.print_exc()
-    try:
-        stage_b()
-    except Exception:
-        # Non-fatal: Stage B depends on domain/shape conventions that may differ;
-        # the printed traceback tells you exactly what to adjust.
-        print("  STAGE B FAILED (non-fatal, inspect shapes/domain):")
-        traceback.print_exc()
-    print("\nDONE." + ("" if ok else "  (Stage A failed -- fix wiring before training.)"))
+
+    if args.full:
+        try:
+            full_mode(args.full, args.n)
+        except Exception:
+            print("  FULL FAILED:")
+            traceback.print_exc()
+    else:
+        ok = True
+        try:
+            stage_a()
+        except Exception:
+            ok = False
+            print("  STAGE A FAILED:")
+            traceback.print_exc()
+        try:
+            stage_b()
+        except Exception:
+            print("  STAGE B FAILED (non-fatal, inspect shapes/domain):")
+            traceback.print_exc()
+        print("\nDONE." + ("" if ok else "  (Stage A failed -- fix wiring before training.)"))
