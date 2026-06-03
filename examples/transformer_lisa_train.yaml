@@ -1,0 +1,121 @@
+# Example LISA training config using the transformer embedding (lifted from the
+# dingo-t1 branch) instead of the frozen SVD reduced-basis layer.
+#
+# This is derived from the user's SVD config. The ONLY changes vs that config are:
+#   (1) data: add a `tokenization:` block  -> enables StrainTokenization
+#   (2) model.embedding_kwargs: replace the `svd:` block with transformer kwargs
+#   (3) removed: data.svd_size_update, model embedding hidden_dims, training.freeze_rb_layer
+#
+# The data pipeline (LISA response, whitening, repackaging) is UNCHANGED: the
+# tokenizer consumes the same whitened channel tensor the RB layer used.
+#
+# TODOs are flagged inline; see notebooks/TRANSFORMER_EMBEDDING_NOTES.md.
+
+data:
+  waveform_dataset_path: /work/pi_mpuerrer_uri_edu/projects/LISA_npe/data/lisa_cpu_8wk.hdf5
+  train_fraction: 0.95
+  window:
+    type: tukey
+    f_s: 0.2
+    T: 5000000
+    roll_off: 250000
+  detector_type: LISA
+  lisa_settings:
+    LISAconst: Proposal
+    responseapprox: full
+    frozenLISA: False
+    TDIrescaled: True
+  detectors:
+    - chan1
+    - chan2
+  # NEW: tokenization for the transformer embedding.
+  tokenization:
+    # token_size = number of frequency bins per token. ~20k bins / 16 -> ~1250
+    # tokens per channel. TODO(LISA): token boundaries MUST align with your
+    # multibanded-domain band nodes; StrainTokenization asserts this via
+    # check_compatibility_of_mfd_nodes_with_tokenization. If it trips, pick a
+    # token_size compatible with your MFD band structure (or use num_tokens).
+    token_size: 16
+    drop_last_token: true
+    normalize_frequency_for_positional_encoding: false
+  extrinsic_prior:
+    dist: bilby.core.prior.Uniform(minimum=20e4, maximum=30e4)
+    lambda: bilby.core.prior.Uniform(minimum=-np.pi, maximum=np.pi, boundary="periodic")
+    beta: bilby.core.prior.Uniform(minimum=-np.pi/2, maximum=np.pi/2)
+    psi: bilby.core.prior.analytical.DeltaFunction(1.239264)
+    geocent_time: bilby.core.prior.analytical.DeltaFunction(47337224.645318404)
+  ref_time: 1735300818
+  inference_parameters:
+    - Mchirp
+    - q
+    - chi1
+    - chi2
+    - inc
+    - dist
+    - lambda
+    - beta
+
+model:
+  posterior_model_type: normalizing_flow
+  posterior_kwargs:
+    num_flow_steps: 30
+    base_transform_kwargs:
+      hidden_dim: 1024
+      num_transform_blocks: 5
+      activation: elu
+      dropout_probability: 0.0
+      batch_norm: True
+      num_bins: 10
+      base_transform_type: rq-coupling
+  # Transformer embedding. The presence of `transformer_kwargs` selects the
+  # transformer path in create_nsf_with_rb_projection_embedding_net and in
+  # autocomplete_model_kwargs. input_dims/output_dim are auto-filled from a data
+  # sample; you set the architecture below.
+  embedding_kwargs:
+    transformer_kwargs:
+      d_model: 256
+      nhead: 8
+      num_layers: 8
+      dim_feedforward: 1024
+      dropout: 0.1
+      norm_first: true
+    tokenizer_kwargs:
+      # input_dims and output_dim are auto-set by autocomplete_model_kwargs.
+      hidden_dims: 256        # int -> MLP tokenizer; list -> DenseResidualNet
+      activation: gelu
+      batch_norm: true
+    positional_encoder_kwargs:
+      positional_encoding_type: continuous   # 'continuous' (NeRF-style) or 'sinusoidal'
+    block_encoder_kwargs:
+      num_blocks: 2           # TODO(LISA): number of TDI channels (A/E). Must match detectors.
+      block_encoding_type: sine
+    final_net_kwargs:
+      # final_net maps the pooled summary (d_model) -> context_dim for the flow.
+      output_dim: 128         # this becomes posterior context_dim
+      hidden_dims:            # list -> DenseResidualNet
+        - 256
+        - 256
+      activation: gelu
+
+training:
+  stage_0:
+    epochs: 500
+    asd_dataset_path: /work/pi_mpuerrer_uri_edu/projects/LISA_npe/data/lisa_asd_cpu_8wk.hdf5
+    # NOTE: no freeze_rb_layer -- there is no reduced-basis layer to freeze.
+    optimizer:
+      type: adam
+      lr: 2.0e-04
+    scheduler:
+      type: reduce_on_plateau
+      patience: 20
+    batch_size: 2048
+
+local:
+  device: cuda
+  num_workers: 32
+  checkpoint_epochs: 50
+  leave_waveforms_on_disk: False
+  on_fly: True
+  runtime_limits:
+    max_time_per_run: 36000000
+    max_epochs_per_run: 500

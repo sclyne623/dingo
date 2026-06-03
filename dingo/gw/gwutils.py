@@ -1,3 +1,6 @@
+from copy import deepcopy
+from typing import Optional
+
 import numpy as np
 from scipy.signal.windows import tukey
 from scipy.interpolate import interp1d
@@ -5,6 +8,22 @@ from bilby.gw.detector import PowerSpectralDensity
 
 from dingo.gw.prior import default_extrinsic_dict
 from dingo.gw.prior import BBHExtrinsicPriorDict
+
+
+def add_defaults_for_missing_ifos(
+    object_to_update: Optional[float | dict],
+    update_value: float,
+    ifos: list,
+):
+    """Lifted from the dingo-t1 branch. Used by StrainTokenization to fill in
+    per-detector defaults (e.g. ASD outlier values) for any missing ifo."""
+    object_to_update = deepcopy(object_to_update)
+    # Include defaults in case of missing values per detector
+    if isinstance(object_to_update, dict) and ifos is not None:
+        for det in ifos:
+            if det not in object_to_update.keys():
+                object_to_update[det] = update_value
+    return object_to_update
 
 
 def get_window(window_kwargs):

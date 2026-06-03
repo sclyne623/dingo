@@ -23,6 +23,7 @@ from dingo.gw.transforms import (
     GNPECoalescenceTimes,
     SampleExtrinsicParameters,
     GetDetectorTimes,
+    StrainTokenization,
 )
 from dingo.gw.noise.asd_dataset import ASDDataset
 from dingo.gw.prior import default_inference_parameters
@@ -265,6 +266,31 @@ def set_train_transforms(
         selected_keys = ["inference_parameters", "waveform", "context_parameters"]
     else:
         selected_keys = ["inference_parameters", "waveform"]
+
+    # Transformer embedding path (lifted from dingo-t1): tokenize the
+    # (whitened, channel-projected) strain into a sequence of frequency-segment
+    # tokens plus a per-token [f_min, f_max, detector] position tensor. Enabled
+    # by adding a `data: tokenization:` block to the training YAML. When absent,
+    # the original SVD/reduced-basis path is used unchanged.
+    #
+    # TODO(LISA): token boundaries must align with the multibanded-domain nodes;
+    # StrainTokenization asserts this via check_compatibility_of_mfd_nodes_with_
+    # tokenization. Choose token_size/num_tokens compatible with your MFD bands.
+    if "tokenization" in data_settings:
+        tok = data_settings["tokenization"]
+        transforms.append(
+            StrainTokenization(
+                domain=domain,
+                num_tokens_per_block=tok.get("num_tokens", None),
+                token_size=tok.get("token_size", None),
+                drop_last_token=tok.get("drop_last_token", False),
+                normalize_frequency=tok.get(
+                    "normalize_frequency_for_positional_encoding", False
+                ),
+            )
+        )
+        selected_keys.append("position")
+        selected_keys.append("drop_token_mask")
 
     transforms.append(UnpackDict(selected_keys=selected_keys))
 

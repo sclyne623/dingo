@@ -466,7 +466,10 @@ def prepare_training_new(
     # The embedding network is assumed to have an SVD projection layer. If other types
     # of embedding networks are added in the future, update this code.
 
-    if train_settings["model"].get("embedding_kwargs", None):
+    _embedding_kwargs = train_settings["model"].get("embedding_kwargs", None)
+    # The transformer embedding has no SVD/reduced-basis layer to seed, so skip
+    # the SVD build entirely when embedding_kwargs has no `svd` block.
+    if _embedding_kwargs and "svd" in _embedding_kwargs:
         svd_kwargs = deepcopy(train_settings["model"]["embedding_kwargs"]["svd"])
         precomputed_files = svd_kwargs.pop("precomputed_files", None)
         if precomputed_files is not None:

@@ -12,7 +12,30 @@ from glasflow.nflows import distributions, flows, transforms
 import glasflow.nflows.nn.nets as nflows_nets
 from dingo.core.utils import torchutils
 from dingo.core.nn.enets import create_enet_with_projection_layer_and_dense_resnet
+from dingo.core.nn.transformer import create_transformer_enet
 from typing import Union, Callable, Tuple
+
+
+class TransformerEmbeddingAdapter(nn.Module):
+    """Wraps the (lifted from dingo-t1) TransformerModel so it conforms to this
+    fork's FlowWrapper convention.
+
+    The TransformerModel forward returns ``(embedding, logging_info)``; this
+    fork's FlowWrapper expects the embedding net to return a single tensor
+    (``x = self.embedding_net(*x)``). This adapter drops the logging dict.
+
+    The context passed by the flow is ``(waveform_tokens, position,
+    drop_token_mask)`` in that order (see set_train_transforms selected_keys),
+    which matches TransformerModel.forward(x, position, src_key_padding_mask).
+    """
+
+    def __init__(self, transformer: nn.Module):
+        super().__init__()
+        self.transformer = transformer
+
+    def forward(self, *args):
+        out = self.transformer(*args)
+        return out[0] if isinstance(out, tuple) else out
 
 
 def create_linear_transform(param_dim: int):
@@ -328,14 +351,22 @@ def create_nsf_with_rb_projection_embedding_net(
     # a hack; improve setting of initial weights later.
 
     embedding_kwargs = copy.deepcopy(embedding_kwargs)
-    if initial_weights is not None:
-        embedding_kwargs["V_rb_list"] = initial_weights["V_rb_list"]
-    elif "V_rb_list" not in embedding_kwargs:
-        embedding_kwargs["V_rb_list"] = None
 
-    embedding_net = create_enet_with_projection_layer_and_dense_resnet(
-        **embedding_kwargs
-    )
+    # Transformer embedding path (lifted from dingo-t1). Triggered by the
+    # presence of `transformer_kwargs` in embedding_kwargs (no SVD / V_rb_list).
+    if "transformer_kwargs" in embedding_kwargs:
+        embedding_net = TransformerEmbeddingAdapter(
+            create_transformer_enet(**embedding_kwargs)
+        )
+    else:
+        if initial_weights is not None:
+            embedding_kwargs["V_rb_list"] = initial_weights["V_rb_list"]
+        elif "V_rb_list" not in embedding_kwargs:
+            embedding_kwargs["V_rb_list"] = None
+        embedding_net = create_enet_with_projection_layer_and_dense_resnet(
+            **embedding_kwargs
+        )
+
     flow = create_nsf_model(**posterior_kwargs)
     model = FlowWrapper(flow, embedding_net)
     return model

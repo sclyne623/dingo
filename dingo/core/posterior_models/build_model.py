@@ -82,20 +82,41 @@ def autocomplete_model_kwargs(model_kwargs: dict, data_sample: list):
         last element is only there is GNPE proxies are required.
     """
 
-    # set input dims from ifo_list and domain information
-    model_kwargs["embedding_kwargs"]["input_dims"] = list(data_sample[1].shape)
-    # set dimension of parameter space of posterior model
-    model_kwargs["posterior_kwargs"]["input_dim"] = len(data_sample[0])
-    # set added_context flag of embedding net if GNPE proxies are required
-    # set context dim of nsf to output dim of embedding net + GNPE proxy dim
-    try:
-        gnpe_proxy_dim = len(data_sample[2])
-        model_kwargs["embedding_kwargs"]["added_context"] = True
-        model_kwargs["posterior_kwargs"]["context_dim"] = (
-            model_kwargs["embedding_kwargs"]["output_dim"] + gnpe_proxy_dim
-        )
-    except IndexError:
-        model_kwargs["embedding_kwargs"]["added_context"] = False
-        model_kwargs["posterior_kwargs"]["context_dim"] = model_kwargs[
-            "embedding_kwargs"
-        ]["output_dim"]
+    emb = model_kwargs["embedding_kwargs"]
+
+    if "transformer_kwargs" in emb:
+        # Transformer embedding path (lifted from dingo-t1). Note: GNPE is not
+        # supported with the transformer (data_sample[2] is the `position`
+        # tensor here, not a GNPE proxy), so we do not use the try/except below.
+        d_model = emb["transformer_kwargs"]["d_model"]
+        if "tokenizer_kwargs" in emb:
+            # data_sample[1] is the tokenized waveform: (num_tokens, num_features)
+            emb["tokenizer_kwargs"]["input_dims"] = list(data_sample[1].shape)
+            emb["tokenizer_kwargs"]["output_dim"] = d_model
+        if "final_net_kwargs" in emb:
+            emb["final_net_kwargs"]["input_dim"] = d_model
+            context_dim = emb["final_net_kwargs"]["output_dim"]
+        else:
+            context_dim = d_model
+        # TODO(LISA): num_blocks (number of TDI channels, = 2 for A/E) is NOT
+        # auto-derived here. Set it explicitly in the YAML, e.g.
+        # block_encoder_kwargs.num_blocks: 2  (and tokenizer num_blocks if used).
+        model_kwargs["posterior_kwargs"]["input_dim"] = len(data_sample[0])
+        model_kwargs["posterior_kwargs"]["context_dim"] = context_dim
+    else:
+        # Original reduced-basis (SVD) embedding path.
+        # set input dims from ifo_list and domain information
+        emb["input_dims"] = list(data_sample[1].shape)
+        # set dimension of parameter space of posterior model
+        model_kwargs["posterior_kwargs"]["input_dim"] = len(data_sample[0])
+        # set added_context flag of embedding net if GNPE proxies are required
+        # set context dim of nsf to output dim of embedding net + GNPE proxy dim
+        try:
+            gnpe_proxy_dim = len(data_sample[2])
+            emb["added_context"] = True
+            model_kwargs["posterior_kwargs"]["context_dim"] = (
+                emb["output_dim"] + gnpe_proxy_dim
+            )
+        except IndexError:
+            emb["added_context"] = False
+            model_kwargs["posterior_kwargs"]["context_dim"] = emb["output_dim"]
