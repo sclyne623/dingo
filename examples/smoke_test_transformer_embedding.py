@@ -99,8 +99,11 @@ def stage_a():
 
 def stage_b():
     print("\n=== STAGE B: StrainTokenization shape check (uniform domain) ===")
-    from dingo.gw.domains import build_domain
-    from dingo.gw.transforms import StrainTokenization
+    # Import directly from the submodules to avoid dingo.gw.transforms.__init__,
+    # which chains through detector_transforms -> lisabeta (needs GSL). This lets
+    # Stage B run even when the lisabeta/GSL runtime is not set up.
+    from dingo.gw.domains.build_domain import build_domain
+    from dingo.gw.transforms.tokenization_transforms import StrainTokenization
 
     domain = build_domain({"type": "FD", "f_min": 0.0, "f_max": 0.01, "delta_f": 1e-5})
     num_bins = len(domain.sample_frequencies) - domain.min_idx
