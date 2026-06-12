@@ -2167,6 +2167,7 @@ class BBHxWaveformGenerator:
             "direct_t_ref_fix": 0.0,
             "direct_distance_convert": 0.0,
             "direct_waveform_call": 0.0,
+            "direct_decenter": 0.0,
             "direct_return_convert": 0.0,
             "amp_total": 0.0,
             "amp_parse_parameters": 0.0,

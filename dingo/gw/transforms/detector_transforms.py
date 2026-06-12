@@ -240,6 +240,11 @@ class GenerateBBHxDirectResponse(object):
             if self.gpu_fastpath and getattr(self.waveform_generator, "use_gpu", False)
             else "cpu"
         )
+        # Caches for the recenter phasor exp(-i 2π f t_ref). When the time
+        # prior is a delta function, t_ref is identical for every sample and
+        # the (1, Nf) phasor can be reused across all batches.
+        self._recenter_freqs_cache = {}
+        self._recenter_phasor_cache = {}
         self.reset_timing_stats()
 
     def reset_timing_stats(self):
@@ -250,6 +255,7 @@ class GenerateBBHxDirectResponse(object):
             "waveform_generate": 0.0,
             "to_torch_or_normalize": 0.0,
             "channel_pack": 0.0,
+            "recenter_phase": 0.0,
             "parameter_bookkeeping": 0.0,
             "total": 0.0,
         }
@@ -337,6 +343,39 @@ class GenerateBBHxDirectResponse(object):
             t = t.to(self.device, non_blocking=True)
         return self._normalize_waveform_shape(t)
 
+    def _get_torch_recenter_phasor(self, t_arr, freqs_cpu, device, dtype):
+        """Build exp(-i 2π f t) directly on the target device.
+
+        The phase angle must be accumulated in float64: t_ref ~ 5e7 s and
+        f ~ 0.1 Hz give angles of order 1e7 rad, far beyond float32
+        resolution. When all t values are identical (delta-function time
+        prior), the (1, Nf) phasor is cached and broadcast over the batch.
+        """
+        scalar_t = None
+        if t_arr.size == 1 or np.all(t_arr == t_arr.flat[0]):
+            scalar_t = float(t_arr.flat[0])
+        cache_key = (scalar_t, str(device), dtype)
+        if scalar_t is not None:
+            cached = self._recenter_phasor_cache.get(cache_key)
+            if cached is not None:
+                return cached
+
+        freqs_key = str(device)
+        f = self._recenter_freqs_cache.get(freqs_key)
+        if f is None:
+            f = torch.as_tensor(freqs_cpu, device=device, dtype=torch.float64)
+            self._recenter_freqs_cache[freqs_key] = f
+
+        if scalar_t is not None:
+            t = torch.tensor([scalar_t], device=device, dtype=torch.float64)
+        else:
+            t = torch.as_tensor(t_arr, device=device, dtype=torch.float64)
+        angle = (-2.0 * np.pi) * t[:, None] * f[None, :]
+        phasor = torch.polar(torch.ones_like(angle), angle).to(dtype)
+        if scalar_t is not None:
+            self._recenter_phasor_cache[cache_key] = phasor
+        return phasor
+
     def __call__(self, input_sample):
         total_t0 = time.perf_counter() if self.timing_profile else None
 
@@ -405,6 +444,7 @@ class GenerateBBHxDirectResponse(object):
         # ProjectOntoDetectors applying time_translate_data(strain, dt) for
         # ground-based detectors.
         if getattr(self.waveform_generator, "decenter_waveform", False):
+            t0 = time.perf_counter() if self.timing_profile else None
             t_ref_val = self._get_first(
                 extrinsic_parameters,
                 ["t_ref", "geocent_time"],
@@ -422,24 +462,31 @@ class GenerateBBHxDirectResponse(object):
                 else self.waveform_generator._get_output_frequency_grid()
             )
             t_arr = np.atleast_1d(np.asarray(t_ref_val, dtype=np.float64))
-            # phasor[B, Nf] = exp(-i 2π f t_b)
-            phasor_np = np.exp(
-                -1j * 2.0 * np.pi * t_arr[:, None] * freqs_cpu[None, :]
-            )
+            # phasor[B, Nf] = exp(-i 2π f t_b). Built lazily: on-device with
+            # torch for CUDA strains (a CPU numpy exp over B x Nf plus a host
+            # to device copy here dominates the train-time data path), and
+            # with numpy only for CPU-array strains.
+            phasor_np = None
             for key in list(strains.keys()):
                 s = strains[key]
                 if isinstance(s, torch.Tensor):
-                    phasor = torch.from_numpy(phasor_np).to(
-                        device=s.device, dtype=s.dtype
+                    phasor = self._get_torch_recenter_phasor(
+                        t_arr, freqs_cpu, s.device, s.dtype
                     )
                     if s.shape[0] != phasor.shape[0] and phasor.shape[0] == 1:
                         phasor = phasor.expand(s.shape[0], -1)
                     strains[key] = s * phasor
                 else:
+                    if phasor_np is None:
+                        phasor_np = np.exp(
+                            -1j * 2.0 * np.pi * t_arr[:, None] * freqs_cpu[None, :]
+                        )
                     p = phasor_np
                     if s.shape[0] != p.shape[0] and p.shape[0] == 1:
                         p = np.broadcast_to(p, (s.shape[0], p.shape[1]))
                     strains[key] = s * p
+            if self.timing_profile:
+                self._record_timing("recenter_phase", time.perf_counter() - t0)
 
         # Keep parameter bookkeeping consistent with downstream transforms.
         t0 = time.perf_counter() if self.timing_profile else None
