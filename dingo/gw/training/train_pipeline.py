@@ -32,6 +32,7 @@ from dingo.core.utils import (
 )
 from dingo.core.utils.torchutils import (
     cleanup_ddp,
+    enable_tf32,
     replace_BatchNorm_with_SyncBatchNorm,
     set_seed_based_on_rank,
     setup_ddp,
@@ -213,6 +214,10 @@ def _run_training_ddp_worker(
     try:
         setup_ddp(rank, world_size, port=port, timeout_s=ddp_timeout_s)
         set_seed_based_on_rank(rank)
+
+        # Backend flags are per-process; each spawned DDP worker must set them.
+        if local_settings.get("enable_tf32", True):
+            enable_tf32(print_output=(rank == 0))
 
         local_settings_rank = deepcopy(local_settings)
         local_settings_rank["rank"] = rank
@@ -934,6 +939,8 @@ def train_local():
             args.checkpoint if args.settings_file is None else None,
         )
     else:
+        if local_settings.get("enable_tf32", True):
+            enable_tf32()
         if args.settings_file is not None:
             pm, wfd = prepare_training_new(train_settings, args.train_dir, local_settings)
         else:

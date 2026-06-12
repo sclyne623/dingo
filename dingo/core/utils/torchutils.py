@@ -56,6 +56,23 @@ def set_seed_based_on_rank(rank: int) -> None:
     np.random.seed((base_seed % (2**32 - 1)) + rank)
 
 
+def enable_tf32(print_output: bool = True) -> None:
+    """
+    Allow TF32 tensor-core math for float32 matmuls and cuDNN on Ampere+ GPUs.
+
+    PyTorch < 1.12 enabled TF32 by default, so historical Dingo training on
+    A100s used it implicitly; later PyTorch versions default to full-FP32
+    matmuls, which are several times slower. TF32 keeps FP32 accumulation and
+    only reduces the matmul input mantissa, leaving network weights, loss,
+    optimizer state, and inference in FP32.
+    """
+    if torch.cuda.is_available():
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+        if print_output:
+            print("Enabled TF32 tensor-core math for matmul and cuDNN.")
+
+
 def setup_ddp(
     rank: int,
     world_size: int,
