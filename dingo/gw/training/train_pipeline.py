@@ -276,7 +276,21 @@ def _run_training_ddp_worker(
         if dist.is_available() and dist.is_initialized():
             dist.barrier()
 
-        pm.network = replace_BatchNorm_with_SyncBatchNorm(pm.network)
+        # SyncBatchNorm turns every BatchNorm layer into per-step NCCL
+        # collectives (hundreds per iteration for deep flows). It is only
+        # needed when per-rank batches are too small for stable BN statistics,
+        # so it is opt-in via local.distributed.sync_batchnorm.
+        if bool(
+            local_settings.get("distributed", {}).get("sync_batchnorm", False)
+        ):
+            pm.network = replace_BatchNorm_with_SyncBatchNorm(pm.network)
+            if rank == 0:
+                print("Converted BatchNorm layers to SyncBatchNorm.")
+        elif rank == 0:
+            print(
+                "Using regular BatchNorm with per-rank batch statistics "
+                "(set local.distributed.sync_batchnorm=true to synchronize)."
+            )
         find_unused_parameters = bool(
             local_settings.get("distributed", {}).get("find_unused_parameters", True)
         )
@@ -448,6 +462,10 @@ def prepare_training_new(
         if "timing_profile_print_every" in local_settings:
             waveform_generator_settings["timing_profile_print_every"] = int(
                 local_settings["timing_profile_print_every"]
+            )
+        if "train_complex64" in local_settings:
+            waveform_generator_settings["train_complex64"] = bool(
+                local_settings["train_complex64"]
             )
         if hasattr(wfd, "waveform_generator"):
             if "gpu_fastpath" in waveform_generator_settings:
@@ -622,6 +640,10 @@ def prepare_training_resume(
             )
             wfd.waveform_generator.timing_profile_print_every = int(
                 local_settings["timing_profile_print_every"]
+            )
+        if "train_complex64" in local_settings:
+            waveform_generator_settings["train_complex64"] = bool(
+                local_settings["train_complex64"]
             )
 
     if local_settings.get("wandb", False):

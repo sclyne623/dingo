@@ -222,6 +222,7 @@ class GenerateBBHxDirectResponse(object):
         backend_native_fused=False,
         timing_profile=False,
         timing_profile_print_every=0,
+        downcast_complex64=True,
     ):
         from dingo.gw.waveform_generator.waveform_generator import BBHxWaveformGenerator
 
@@ -235,16 +236,15 @@ class GenerateBBHxDirectResponse(object):
         self.backend_native_fused = bool(backend_native_fused)
         self.timing_profile = bool(timing_profile)
         self.timing_profile_print_every = int(timing_profile_print_every)
+        # BBHx generates in complex128, but the network consumes float32.
+        # Downcasting right after generation halves the memory traffic of all
+        # downstream transforms (whiten, noise, repackage).
+        self.downcast_complex64 = bool(downcast_complex64)
         self.device = torch.device(
             "cuda"
             if self.gpu_fastpath and getattr(self.waveform_generator, "use_gpu", False)
             else "cpu"
         )
-        # Caches for the recenter phasor exp(-i 2π f t_ref). When the time
-        # prior is a delta function, t_ref is identical for every sample and
-        # the (1, Nf) phasor can be reused across all batches.
-        self._recenter_freqs_cache = {}
-        self._recenter_phasor_cache = {}
         self.reset_timing_stats()
 
     def reset_timing_stats(self):
@@ -255,7 +255,6 @@ class GenerateBBHxDirectResponse(object):
             "waveform_generate": 0.0,
             "to_torch_or_normalize": 0.0,
             "channel_pack": 0.0,
-            "recenter_phase": 0.0,
             "parameter_bookkeeping": 0.0,
             "total": 0.0,
         }
@@ -341,40 +340,9 @@ class GenerateBBHxDirectResponse(object):
 
         if self.device.type == "cuda":
             t = t.to(self.device, non_blocking=True)
+        if self.downcast_complex64 and t.is_complex():
+            t = t.to(torch.complex64)
         return self._normalize_waveform_shape(t)
-
-    def _get_torch_recenter_phasor(self, t_arr, freqs_cpu, device, dtype):
-        """Build exp(-i 2π f t) directly on the target device.
-
-        The phase angle must be accumulated in float64: t_ref ~ 5e7 s and
-        f ~ 0.1 Hz give angles of order 1e7 rad, far beyond float32
-        resolution. When all t values are identical (delta-function time
-        prior), the (1, Nf) phasor is cached and broadcast over the batch.
-        """
-        scalar_t = None
-        if t_arr.size == 1 or np.all(t_arr == t_arr.flat[0]):
-            scalar_t = float(t_arr.flat[0])
-        cache_key = (scalar_t, str(device), dtype)
-        if scalar_t is not None:
-            cached = self._recenter_phasor_cache.get(cache_key)
-            if cached is not None:
-                return cached
-
-        freqs_key = str(device)
-        f = self._recenter_freqs_cache.get(freqs_key)
-        if f is None:
-            f = torch.as_tensor(freqs_cpu, device=device, dtype=torch.float64)
-            self._recenter_freqs_cache[freqs_key] = f
-
-        if scalar_t is not None:
-            t = torch.tensor([scalar_t], device=device, dtype=torch.float64)
-        else:
-            t = torch.as_tensor(t_arr, device=device, dtype=torch.float64)
-        angle = (-2.0 * np.pi) * t[:, None] * f[None, :]
-        phasor = torch.polar(torch.ones_like(angle), angle).to(dtype)
-        if scalar_t is not None:
-            self._recenter_phasor_cache[cache_key] = phasor
-        return phasor
 
     def __call__(self, input_sample):
         total_t0 = time.perf_counter() if self.timing_profile else None
@@ -388,10 +356,17 @@ class GenerateBBHxDirectResponse(object):
 
         if self.gpu_fastpath and self.backend_native_fused:
             t0 = time.perf_counter() if self.timing_profile else None
+            # apply_decenter=False: this transform feeds the sampled extrinsic
+            # t_ref directly into generation, so decentering (merger to t=0)
+            # followed by re-centering with the same t_ref is an exact identity.
+            # If generation is ever changed to use a fixed reference time with
+            # the sampled time applied afterwards, the decenter/recenter pair
+            # must be reinstated here.
             h = self.waveform_generator.generate_direct_response_backend_native(
                 parameters,
                 extrinsic_parameters,
                 catch_waveform_errors=False,
+                apply_decenter=False,
             )
             if self.timing_profile:
                 self._record_timing("waveform_generate", time.perf_counter() - t0)
@@ -408,9 +383,10 @@ class GenerateBBHxDirectResponse(object):
             if self.timing_profile:
                 self._record_timing("merge_params", time.perf_counter() - t0)
 
+            # apply_decenter=False: see comment on the fused branch above.
             t0 = time.perf_counter() if self.timing_profile else None
             wf = self.waveform_generator.generate_amp_phase(
-                full_parameters, catch_waveform_errors=False
+                full_parameters, catch_waveform_errors=False, apply_decenter=False
             )
             if self.timing_profile:
                 self._record_timing("waveform_generate", time.perf_counter() - t0)
@@ -438,55 +414,13 @@ class GenerateBBHxDirectResponse(object):
         if self.timing_profile:
             self._record_timing("channel_pack", time.perf_counter() - t0)
 
-        # If the waveform generator returned a "decentered" waveform (merger at
-        # t=0 in source frame, dingo / lisabeta convention), re-apply the time
-        # shift exp(-i 2π f t_ref) here -- this is the LISA analogue of
-        # ProjectOntoDetectors applying time_translate_data(strain, dt) for
-        # ground-based detectors.
-        if getattr(self.waveform_generator, "decenter_waveform", False):
-            t0 = time.perf_counter() if self.timing_profile else None
-            t_ref_val = self._get_first(
-                extrinsic_parameters,
-                ["t_ref", "geocent_time"],
-                self._get_first(
-                    parameters,
-                    ["t_ref", "geocent_time"],
-                    self.waveform_generator.default_t_ref_seconds,
-                ),
-            )
-            freqs_cpu = np.asarray(
-                self.waveform_generator._get_cached_backend_frequency_grid()
-                if not getattr(self.waveform_generator, "use_gpu", False)
-                else self.waveform_generator._cached_output_freqs_cpu
-                if self.waveform_generator._cached_output_freqs_cpu is not None
-                else self.waveform_generator._get_output_frequency_grid()
-            )
-            t_arr = np.atleast_1d(np.asarray(t_ref_val, dtype=np.float64))
-            # phasor[B, Nf] = exp(-i 2π f t_b). Built lazily: on-device with
-            # torch for CUDA strains (a CPU numpy exp over B x Nf plus a host
-            # to device copy here dominates the train-time data path), and
-            # with numpy only for CPU-array strains.
-            phasor_np = None
-            for key in list(strains.keys()):
-                s = strains[key]
-                if isinstance(s, torch.Tensor):
-                    phasor = self._get_torch_recenter_phasor(
-                        t_arr, freqs_cpu, s.device, s.dtype
-                    )
-                    if s.shape[0] != phasor.shape[0] and phasor.shape[0] == 1:
-                        phasor = phasor.expand(s.shape[0], -1)
-                    strains[key] = s * phasor
-                else:
-                    if phasor_np is None:
-                        phasor_np = np.exp(
-                            -1j * 2.0 * np.pi * t_arr[:, None] * freqs_cpu[None, :]
-                        )
-                    p = phasor_np
-                    if s.shape[0] != p.shape[0] and p.shape[0] == 1:
-                        p = np.broadcast_to(p, (s.shape[0], p.shape[1]))
-                    strains[key] = s * p
-            if self.timing_profile:
-                self._record_timing("recenter_phase", time.perf_counter() - t0)
+        # Note on decenter_waveform: this transform requests waveforms with
+        # apply_decenter=False, so the strains already carry the physical
+        # merger time (bbhx bakes the sampled t_ref into generation). The
+        # previous decenter (exp(+i 2π f t_ref)) / recenter (exp(-i 2π f
+        # t_ref)) pair cancelled exactly here and has been short-circuited.
+        # The decenter machinery remains active for stored-dataset and
+        # injection paths (see BBHxWaveformGenerator.decenter_waveform).
 
         # Keep parameter bookkeeping consistent with downstream transforms.
         t0 = time.perf_counter() if self.timing_profile else None

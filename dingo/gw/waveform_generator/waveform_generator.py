@@ -2384,10 +2384,20 @@ class BBHxWaveformGenerator:
         intrinsic_parameters: Dict[str, float],
         extrinsic_parameters: Dict[str, float],
         catch_waveform_errors: bool = False,
+        apply_decenter: bool = True,
     ):
         """
         Backend-native fused direct-response path for BBHx GPU fast training.
         Avoids merged parameter dicts and extra Python bookkeeping in transforms.
+
+        Parameters
+        ----------
+        apply_decenter : bool
+            If False, skip the decenter multiply even when
+            ``self.decenter_waveform`` is set. Callers that feed the sampled
+            extrinsic t_ref directly into generation and would immediately
+            re-center with the same t_ref (an exact round trip) should pass
+            False to avoid two cancelling full-array phase multiplies.
         """
         total_t0 = time.perf_counter() if self.timing_profile else None
         t0 = time.perf_counter() if self.timing_profile else None
@@ -2509,7 +2519,7 @@ class BBHxWaveformGenerator:
             if self.timing_profile:
                 self._timing_add("direct_waveform_call", time.perf_counter() - t0)
 
-            if self.decenter_waveform:
+            if self.decenter_waveform and apply_decenter:
                 t0 = time.perf_counter() if self.timing_profile else None
                 waveform_data = self._decenter_waveform(waveform_data, freqs, t_ref)
                 if self.timing_profile:
@@ -2547,7 +2557,10 @@ class BBHxWaveformGenerator:
         return self._cached_output_freqs_backend
 
     def generate_amp_phase(
-        self, parameters: Dict[str, float], catch_waveform_errors=False,
+        self,
+        parameters: Dict[str, float],
+        catch_waveform_errors=False,
+        apply_decenter: bool = True,
     ) -> Dict[str, np.ndarray]:
         """Generate GW amplitude and phase using BBHx.
 
@@ -2566,6 +2579,12 @@ class BBHxWaveformGenerator:
 
         catch_waveform_errors: bool
             Whether to catch waveform generation errors (default False for debugging)
+
+        apply_decenter: bool
+            If False, skip the decenter multiply (and the ``decentered`` /
+            ``t_ref`` output tags) even when ``self.decenter_waveform`` is set.
+            Use this when the caller feeds the sampled extrinsic t_ref into
+            generation and would immediately re-center with the same value.
 
         Returns
         -------
@@ -2625,7 +2644,7 @@ class BBHxWaveformGenerator:
             if self.timing_profile:
                 self._timing_add("amp_waveform_call", time.perf_counter() - t0)
 
-            if self.decenter_waveform:
+            if self.decenter_waveform and apply_decenter:
                 waveform_data = self._decenter_waveform(waveform_data, freqs, t_ref)
 
             # Package waveform data. Keep all returned channels (A/E/T) rather than
@@ -2652,7 +2671,7 @@ class BBHxWaveformGenerator:
                     "phase": np.angle(waveform_payload),
                     "freqs": freqs,
                 }
-            if self.decenter_waveform:
+            if self.decenter_waveform and apply_decenter:
                 # Carry t_ref so the projection / detector transform can
                 # re-apply exp(-i 2π f t_ref) and recover the physical strain.
                 wf_dict["t_ref"] = self._to_numpy(t_ref)

@@ -10,6 +10,12 @@ class SampleExtrinsicParameters(object):
     Sample extrinsic parameters and add them to sample in a separate dictionary.
     """
 
+    # Time-like parameters must stay float64: e.g. a LISA SSB reference time
+    # ~5e7 s has a float32 resolution of ~4 s, which would quantize sampled
+    # coalescence times and shift training data relative to full-precision
+    # injections.
+    _FLOAT64_KEYS = ("geocent_time", "t_ref", "t_ref_years")
+
     def __init__(self, extrinsic_prior_dict):
         self.extrinsic_prior_dict = extrinsic_prior_dict
         self.prior = BBHExtrinsicPriorDict(extrinsic_prior_dict)
@@ -19,7 +25,13 @@ class SampleExtrinsicParameters(object):
         batched, batch_size = get_batch_size_of_input_sample(input_sample)
         extrinsic_parameters = self.prior.sample(batch_size if batched else None)
         extrinsic_parameters = {
-            k: v.astype(np.float32) if batched else float(v)
+            k: (
+                v.astype(np.float64)
+                if (k in self._FLOAT64_KEYS or k.endswith("_time"))
+                else v.astype(np.float32)
+            )
+            if batched
+            else float(v)
             for k, v in extrinsic_parameters.items()
         }
         sample["extrinsic_parameters"] = extrinsic_parameters

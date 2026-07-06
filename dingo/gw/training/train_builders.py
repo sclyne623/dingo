@@ -210,6 +210,12 @@ def set_train_transforms(
     bbhx_timing_profile_print_every = int(
         waveform_generator_settings.get("timing_profile_print_every", 0)
     )
+    # BBHx generates complex128; the network consumes float32. Downcast to
+    # complex64 right after generation (default on) unless disabled via
+    # train_complex64: false in the waveform generator settings.
+    bbhx_train_complex64 = bool(
+        waveform_generator_settings.get("train_complex64", True)
+    )
     # SVD initialization intentionally omits downstream formatting/noise transforms
     # and expects CPU numpy arrays. Keep GPU fast-path for full train/test transforms.
     use_gpu_fastpath_for_this_transform = bbhx_gpu_fastpath and omit_transforms is None
@@ -231,6 +237,7 @@ def set_train_transforms(
                     backend_native_fused=use_backend_native_fused_for_this_transform,
                     timing_profile=bbhx_timing_profile,
                     timing_profile_print_every=bbhx_timing_profile_print_every,
+                    downcast_complex64=bbhx_train_complex64,
                 )
             )
         else:
