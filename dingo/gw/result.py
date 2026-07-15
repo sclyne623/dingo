@@ -604,10 +604,13 @@ class Result(CoreResult):
         # Restrict to samples that are within the prior.
         param_keys = [k for k, v in self.prior.items() if not isinstance(v, Constraint)]
         theta = self.samples[param_keys]
-        
-        # Evaluate prior and constraints in single pass
-        log_prior = self.prior.ln_prob(theta, axis=0)
-        constraints = self.prior.evaluate_constraints(theta)
+
+        # Evaluate prior and constraints in single pass. Pass a dict of arrays rather
+        # than a DataFrame: newer bilby versions (>= 2.3) mishandle DataFrames in
+        # evaluate_constraints, returning a (num_samples, num_params) array.
+        theta_dict = {k: theta[k].to_numpy() for k in theta.columns}
+        log_prior = self.prior.ln_prob(theta_dict, axis=0)
+        constraints = self.prior.evaluate_constraints(theta_dict)
         within_prior = (constraints != 0) & np.isfinite(log_prior)
 
         num_valid_samples = np.count_nonzero(within_prior)

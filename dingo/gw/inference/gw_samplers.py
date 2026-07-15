@@ -119,10 +119,12 @@ class GWSamplerMixin(object):
             Whether to apply instead the inverse transformation. This is used prior to
             calculating the log_prob.
         """
-        # Add fixed parameters from prior
-        intrinsic_prior = self.metadata["dataset_settings"]["intrinsic_prior"]
+        # Add fixed parameters from prior. Use base_model_metadata so this also works
+        # for unconditional models (e.g., density recovery NDEs), where self.metadata
+        # describes the unconditional flow and has no dataset_settings.
+        intrinsic_prior = self.base_model_metadata["dataset_settings"]["intrinsic_prior"]
         extrinsic_prior = get_extrinsic_prior_dict(
-            self.metadata["train_settings"]["data"]["extrinsic_prior"]
+            self.base_model_metadata["train_settings"]["data"]["extrinsic_prior"]
         )
         prior = build_prior_with_defaults({**intrinsic_prior, **extrinsic_prior})
         num_samples = len(samples[list(samples.keys())[0]])
