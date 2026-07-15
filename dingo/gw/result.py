@@ -1,16 +1,15 @@
 import copy
 import time
+from functools import partial
+from multiprocessing import Pool
 from typing import Optional
 
 import numpy as np
 import yaml
-from bilby.core.prior import Uniform, Constraint, PriorDict
+from bilby.core.prior import Interped, Uniform, Constraint, PriorDict
+from bilby.core.utils import random as bilby_random
+from threadpoolctl import threadpool_limits
 
-from dingo.core.density import (
-    interpolated_sample_and_log_prob_multi,
-    interpolated_log_prob_multi,
-)
-from dingo.core.multiprocessing import apply_func_with_multiprocessing
 from dingo.core.result import Result as CoreResult
 from dingo.gw.conversion import change_spin_conversion_phase
 from dingo.gw.domains import build_domain
@@ -20,6 +19,81 @@ from dingo.gw.prior import build_prior_with_defaults
 
 
 RANDOM_STATE = 150914
+
+
+def _sample_synthetic_phase_chunk(
+    task,
+    likelihood,
+    phases,
+    uniform_weight,
+    approximation_22_mode,
+    inverse,
+):
+    """
+    Process one chunk of samples end-to-end for sample_synthetic_phase.
+
+    Computes the phase-grid log posterior for the chunk, builds the interpolated
+    synthetic phase distribution per sample, and immediately reduces it to either a
+    phase sample + log_prob (forward) or a log_prob (inverse). The (chunk_size,
+    n_grid) posterior grid is discarded on return, so memory usage is bounded by
+    chunk_size rather than the total number of samples.
+
+    Parameters
+    ----------
+    task : tuple
+        (data_chunk, aux_chunk). data_chunk is a pd.DataFrame of parameters, or an
+        array of precomputed complex inner products (d | h) if
+        approximation_22_mode. aux_chunk contains unit-interval quantiles for
+        inverse-CDF sampling (forward mode) or the phases at which to evaluate the
+        log_prob (inverse mode).
+    likelihood : StationaryGaussianGWLikelihood or None
+        Only required (and pickled to workers) when approximation_22_mode is False.
+    phases : np.ndarray
+        Phase grid.
+    uniform_weight : float
+        Weight of the uniform floor added to the phase posterior.
+    approximation_22_mode : bool
+        Whether the waveform is approximated by its (2, 2) mode.
+    inverse : bool
+        Forward (sample phase) or inverse (evaluate log_prob) direction.
+
+    Returns
+    -------
+    tuple of np.ndarray
+        (phase, log_prob) in forward mode, (log_prob,) in inverse mode.
+    """
+    data_chunk, aux_chunk = task
+
+    if approximation_22_mode:
+        phase_log_posterior = np.outer(data_chunk, np.exp(2j * phases)).real
+    else:
+        phase_log_posterior = likelihood.log_likelihood_phase_grid_chunk(
+            data_chunk, phases
+        )
+
+    # Normalize posterior with numerical stability, exponentiate in place.
+    phase_log_posterior -= np.amax(phase_log_posterior, axis=1, keepdims=True)
+    phase_posterior = np.exp(phase_log_posterior, out=phase_log_posterior)
+    # Include a floor value to maintain mass coverage.
+    phase_posterior += phase_posterior.mean(axis=-1, keepdims=True) * uniform_weight
+
+    n = len(phase_posterior)
+    if not inverse:
+        new_phase = np.empty(n)
+        log_prob = np.empty(n)
+        for i in range(n):
+            interp = Interped(phases, phase_posterior[i])
+            # Equivalent to interp.sample(), but with the quantile drawn in the main
+            # process. This keeps results independent of the forked worker RNG state.
+            new_phase[i] = interp.rescale(aux_chunk[i])
+            log_prob[i] = interp.ln_prob(new_phase[i])
+        return new_phase, log_prob
+    else:
+        log_prob = np.empty(n)
+        for i in range(n):
+            interp = Interped(phases, phase_posterior[i])
+            log_prob[i] = interp.ln_prob(aux_chunk[i])
+        return (log_prob,)
 
 
 class Result(CoreResult):
@@ -493,6 +567,13 @@ class Result(CoreResult):
                 num_processes (optional)
                 n_grid
                 uniform_weight (optional)
+                chunk_size (optional)
+                    Number of samples processed end-to-end per task. Memory usage
+                    per process is bounded by (chunk_size, n_grid) arrays; the full
+                    (num_samples, n_grid) phase grid is never held in memory.
+                maxtasksperchild (optional)
+                    Number of chunks a worker process handles before being replaced
+                    (default 1). Bounds memory leaked by native waveform code.
         inverse : bool, default False
             Whether to apply instead the inverse transformation. This is used prior to
             calculating the log_prob. In inverse mode, the posterior probability over
@@ -551,6 +632,10 @@ class Result(CoreResult):
         # For each sample, build the posterior over phase given the remaining parameters.
         phases = np.linspace(0, 2 * np.pi, self.synthetic_phase_kwargs["n_grid"])
         theta_valid = theta.loc[within_prior]
+        uniform_weight = self.synthetic_phase_kwargs.get("uniform_weight", 0.01)
+        # chunk_size controls memory usage: at any time, only (chunk_size, n_grid)
+        # posterior grids exist per process, never the full (num_samples, n_grid) grid.
+        chunk_size = self.synthetic_phase_kwargs.get("chunk_size", 100)
 
         if approximation_22_mode:
             # For each sample, the un-normalized posterior depends only on (d | h(phase)):
@@ -558,41 +643,63 @@ class Result(CoreResult):
             # to the normalization. (We check above that p(phase) is constant.)
             theta_valid = theta_valid.copy()
             theta_valid["phase"] = 0.0
-            d_inner_h_complex = self.likelihood.d_inner_h_complex_multi(
+            # One complex number per sample; the phase grid is applied per chunk below.
+            data = self.likelihood.d_inner_h_complex_multi(
                 theta_valid,
                 num_processes,
             )
-
-            # Evaluate the log posterior over the phase across the grid.
-            phasor = np.exp(2j * phases)
-            phase_log_posterior = np.outer(d_inner_h_complex, phasor).real
         else:
-            # Use optimized chunked batch processing for phase grid evaluation
-            # This combines parallelization across chunks with vectorized phase evaluation
-            # chunk_size controls memory usage (smaller = less memory, more overhead)
-            chunk_size = self.synthetic_phase_kwargs.get("chunk_size", 100)
-            phase_log_posterior = self.likelihood.log_likelihood_phase_grid_batch(
-                theta_valid,
-                phases=phases,
-                num_processes=num_processes,
-                chunk_size=chunk_size,
-            )
-
-        # Normalize posterior with numerical stability
-        phase_log_posterior -= np.amax(phase_log_posterior, axis=1, keepdims=True)
-        phase_posterior = np.exp(phase_log_posterior)
-        
-        # Include a floor value to maintain mass coverage.
-        uniform_weight = self.synthetic_phase_kwargs.get("uniform_weight", 0.01)
-        phase_posterior += phase_posterior.mean(axis=-1, keepdims=True) * uniform_weight
+            data = theta_valid
 
         if not inverse:
-            # Forward direction: sample new phase and update samples
-            new_phase, delta_log_prob = interpolated_sample_and_log_prob_multi(
-                phases,
-                phase_posterior,
-                num_processes,
-            )
+            # Draw the sampling quantiles in the main process, mirroring
+            # Interped.sample() (which maps rng.uniform through the inverse CDF).
+            # The workers then only apply the deterministic inverse CDF, so results
+            # do not depend on forked worker RNG states.
+            aux = bilby_random.rng.uniform(0, 1, num_valid_samples)
+        else:
+            aux = sample_phase
+
+        # Process samples in chunks, each reduced to per-sample outputs (phase,
+        # log_prob) before the next chunk's grid is computed. This bounds memory and
+        # parallelizes the likelihood grid and the interpolation in a single pass.
+        tasks = []
+        for i in range(0, num_valid_samples, chunk_size):
+            if approximation_22_mode:
+                data_chunk = data[i : i + chunk_size]
+            else:
+                data_chunk = data.iloc[i : i + chunk_size]
+            tasks.append((data_chunk, aux[i : i + chunk_size]))
+
+        chunk_func = partial(
+            _sample_synthetic_phase_chunk,
+            # The likelihood is only needed (and pickled to workers) for grid-based
+            # likelihood evaluations.
+            likelihood=None if approximation_22_mode else self.likelihood,
+            phases=phases,
+            uniform_weight=uniform_weight,
+            approximation_22_mode=approximation_22_mode,
+            inverse=inverse,
+        )
+
+        if num_processes > 1 and len(tasks) > 1:
+            with threadpool_limits(limits=1, user_api="blas"):
+                # maxtasksperchild recycles worker processes, so memory leaked by
+                # native waveform code (e.g., lalsimulation TD modes leak ~40 kB per
+                # waveform) is released instead of accumulating over the run.
+                with Pool(
+                    processes=min(num_processes, len(tasks)),
+                    maxtasksperchild=self.synthetic_phase_kwargs.get(
+                        "maxtasksperchild", 1
+                    ),
+                ) as pool:
+                    chunk_results = pool.map(chunk_func, tasks)
+        else:
+            chunk_results = list(map(chunk_func, tasks))
+
+        if not inverse:
+            new_phase = np.concatenate([r[0] for r in chunk_results])
+            delta_log_prob = np.concatenate([r[1] for r in chunk_results])
 
             # Initialize arrays for all samples, then fill in valid ones
             phase_array = np.full(len(theta), 0.0)
@@ -612,12 +719,7 @@ class Result(CoreResult):
 
         else:
             # Inverse direction: evaluate synthetic log prob for given phases
-            log_prob = interpolated_log_prob_multi(
-                phases,
-                phase_posterior,
-                sample_phase,
-                num_processes,
-            )
+            log_prob = np.concatenate([r[0] for r in chunk_results])
 
             # Initialize array for all samples, then fill in valid ones
             log_prob_array = np.full(len(theta), np.nan)

@@ -412,21 +412,31 @@ class StationaryGaussianGWLikelihood(GWSignal, Likelihood):
         
         return log_likelihoods
 
-    def log_likelihood_phase_grid_batch(self, theta_batch, phases=None, num_processes=1, chunk_size=100):
+    def log_likelihood_phase_grid_batch(
+        self,
+        theta_batch,
+        phases=None,
+        num_processes=1,
+        chunk_size=100,
+        maxtasksperchild=None,
+    ):
         """
         Efficiently compute log_likelihood_phase_grid for multiple samples using chunked
         parallel processing.
-        
+
         This hybrid approach combines:
         1. Chunking: Split samples into manageable chunks (controlled by chunk_size)
         2. Parallelization: Process chunks in parallel (controlled by num_processes)
         3. Vectorization: Use vectorized phase grid evaluation within each chunk
-        
+
         This provides the best balance of:
         - Memory efficiency (only process one chunk at a time per worker)
         - CPU parallelization (multiple workers process different chunks)
         - Vectorization speedup (vectorized phase evaluation per sample)
-        
+
+        Note that the returned array itself has shape (n_samples, n_phases), so for
+        large batches the output dominates memory usage regardless of chunking.
+
         Parameters
         ----------
         theta_batch : pd.DataFrame or list of dict
@@ -439,15 +449,18 @@ class StationaryGaussianGWLikelihood(GWSignal, Likelihood):
         chunk_size : int, optional
             Number of samples per chunk. Smaller chunks use less memory but have
             more overhead. Default is 100. Adjust based on your memory constraints.
-            
+        maxtasksperchild : int, optional
+            If set, each worker process is replaced after this many chunks. This
+            bounds memory leaked by native waveform code (e.g., lalsimulation TD
+            modes leak ~40 kB per waveform call).
+
         Returns
         -------
         log_likelihoods : np.ndarray
             Array of shape (n_samples, n_phases) with log likelihoods
         """
         import pandas as pd
-        from dingo.core.multiprocessing import apply_func_with_multiprocessing
-        
+
         if self.phase_marginalization:
             raise ValueError(
                 "Can't compute likelihood on a phase grid for "
@@ -463,43 +476,52 @@ class StationaryGaussianGWLikelihood(GWSignal, Likelihood):
                 f"WaveformGenerator.spin_conversion_phase = 0, "
                 f"got {self.waveform_generator.spin_conversion_phase}."
             )
-        
+
         # Convert input to DataFrame if needed
         if isinstance(theta_batch, list):
             theta_batch = pd.DataFrame(theta_batch)
-        
+
         if phases is None:
             phases = self.phase_grid
         phases = np.asarray(phases)
-        
+
         n_samples = len(theta_batch)
-        
-        # Split into chunks
-        chunks = []
-        for i in range(0, n_samples, chunk_size):
-            chunk = theta_batch.iloc[i:i+chunk_size].copy()
-            chunks.append(chunk)
-        
-        # Process chunks (with or without parallelization)
-        if num_processes > 1 and len(chunks) > 1:
+        chunk_starts = range(0, n_samples, chunk_size)
+
+        # Preallocate the output and write chunk results into it as they arrive.
+        # This avoids holding a list of all chunk results plus a vstack copy.
+        log_likelihoods = np.empty((n_samples, len(phases)))
+
+        if num_processes > 1 and len(chunk_starts) > 1:
             # Parallel processing of chunks using multiprocessing.Pool directly
-            from multiprocessing import Pool
-            from threadpoolctl import threadpool_limits
-            
+            from functools import partial
+
+            chunk_generator = (
+                theta_batch.iloc[i : i + chunk_size] for i in chunk_starts
+            )
             with threadpool_limits(limits=1, user_api="blas"):
-                with Pool(processes=min(num_processes, len(chunks))) as pool:
-                    # Use partial to pass phases as a fixed argument
-                    from functools import partial
-                    process_func = partial(self.log_likelihood_phase_grid_chunk, phases=phases)
-                    chunk_results = pool.map(process_func, chunks)
+                with Pool(
+                    processes=min(num_processes, len(chunk_starts)),
+                    maxtasksperchild=maxtasksperchild,
+                ) as pool:
+                    # Use partial to pass phases as a fixed argument. imap preserves
+                    # order and streams results, so only one chunk result at a time
+                    # is buffered before being written to the output array.
+                    process_func = partial(
+                        self.log_likelihood_phase_grid_chunk, phases=phases
+                    )
+                    for i, result in zip(
+                        chunk_starts, pool.imap(process_func, chunk_generator)
+                    ):
+                        log_likelihoods[i : i + len(result)] = result
         else:
             # Sequential processing
-            chunk_results = [self.log_likelihood_phase_grid_chunk(chunk, phases) 
-                           for chunk in chunks]
-        
-        # Concatenate results
-        log_likelihoods = np.vstack(chunk_results)
-        
+            for i in chunk_starts:
+                chunk = theta_batch.iloc[i : i + chunk_size]
+                log_likelihoods[i : i + len(chunk)] = (
+                    self.log_likelihood_phase_grid_chunk(chunk, phases)
+                )
+
         return log_likelihoods
 
     def log_likelihood_phase_grid_reference(self, theta, phases=None):
