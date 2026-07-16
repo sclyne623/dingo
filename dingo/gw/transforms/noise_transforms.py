@@ -1,3 +1,5 @@
+import copy
+
 import numpy as np
 import torch
 from bilby.gw.detector import PowerSpectralDensity
@@ -182,6 +184,38 @@ class AddWhiteNoiseComplex(object):
             noise = noise.numpy()
             noisy_strains[ifo] = pure_strain + noise
         sample["waveform"] = noisy_strains
+        return sample
+
+
+class DuplicateSamples(object):
+    """
+    Tile the sample waveforms and asds across a leading batch dimension of size
+    ``batch_size``.
+
+    This is used for zero-noise inference: the same (single) event strain is tiled so
+    that a subsequent AddWhiteNoiseComplex transform can add an *independent* noise
+    realization to each copy, giving a proposal that marginalizes over noise
+    realizations.
+    """
+
+    def __init__(self, batch_size):
+        self.batch_size = batch_size
+
+    def __call__(self, input_sample):
+        sample = copy.deepcopy(input_sample)
+        ifos = sample["waveform"].keys()
+
+        # duplicate waveforms and asds over the batch dimension
+        for ifo in ifos:
+            sample["waveform"][ifo] = np.broadcast_to(
+                sample["waveform"][ifo],
+                (self.batch_size, len(sample["waveform"][ifo])),
+            )
+            sample["asds"][ifo] = np.broadcast_to(
+                sample["asds"][ifo],
+                (self.batch_size, len(sample["asds"][ifo])),
+            )
+
         return sample
 
 

@@ -147,8 +147,13 @@ class Sampler(object):
             # transforms_pre are expected to transform the data in the same way for each
             # requested sample. We therefore apply pre-processing only once.
             x = self.transform_pre(context)
-            # Require a batch dimension for the embedding network.
-            x = x.unsqueeze(0)
+            # Require a batch dimension for the embedding network. In the standard case
+            # the transformed data is unbatched (shape (n_ifo, 3, n_bins)), so we add a
+            # batch dimension of 1. For zero-noise inference (duplicate_samples), the
+            # data already carries a batch dimension of num_samples (one independent
+            # noise realization per sample), so we leave it as is.
+            if len(x.shape) == 3:
+                x = x.unsqueeze(0)
             x = [x]
         else:
             if context is not None:
@@ -160,12 +165,22 @@ class Sampler(object):
         # have a flag for whether to calculate the log_prob.
         self.model.network.eval()
         with torch.no_grad():
-            y, log_prob = self.model.sample_and_log_prob(*x, num_samples=num_samples)
+            if len(x) > 0 and x[0].shape[0] > 1:
+                # Batched context (one per sample) -> draw a single sample per context.
+                y, log_prob = self.model.sample_and_log_prob(*x, num_samples=1)
+            else:
+                y, log_prob = self.model.sample_and_log_prob(*x, num_samples=num_samples)
 
         if not self.unconditional_model:
             # Squeeze the batch dimension added earlier.
-            y = y.squeeze(0)
-            log_prob = log_prob.squeeze(0)
+            if y.shape[0] != 1:
+                # Batched context: shape (num_samples, 1, dim) -> (num_samples, dim).
+                y = y.squeeze(1)
+                log_prob = log_prob.squeeze(1)
+            else:
+                # Standard case: shape (1, num_samples, dim) -> (num_samples, dim).
+                y = y.squeeze(0)
+                log_prob = log_prob.squeeze(0)
 
         samples = self.transform_post({"parameters": y, "log_prob": log_prob})
         result = samples["parameters"]
@@ -486,7 +501,14 @@ class GNPESampler(Sampler):
             )
 
             d = data_.clone()
-            x["data"] = d.expand(num_samples, *d.shape)
+            # In the standard case data_ is unbatched (shape (n_ifo, 3, n_bins)) and is
+            # expanded across the sample dimension. For zero-noise inference the
+            # init_sampler's transform_pre already produced a batched, per-sample-noised
+            # tensor (shape (num_samples, n_ifo, 3, n_bins)), so we use it directly.
+            if len(data_.shape) == 3:
+                x["data"] = d.expand(num_samples, *d.shape)
+            else:
+                x["data"] = d
 
             x = self.transform_pre(x)
 

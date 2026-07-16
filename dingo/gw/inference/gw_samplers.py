@@ -24,6 +24,8 @@ from dingo.gw.transforms import (
     PostCorrectGeocentTime,
     CopyToExtrinsicParameters,
     GetDetectorTimes,
+    DuplicateSamples,
+    AddWhiteNoiseComplex,
 )
 
 
@@ -39,8 +41,17 @@ class GWSamplerMixin(object):
         Parameters
         ----------
         kwargs
-            Keyword arguments that are forwarded to the superclass.
+            Keyword arguments that are forwarded to the superclass. Two optional
+            keyword arguments are consumed here for zero-noise inference:
+            ``duplicate_samples`` (bool, default False) and ``batch_size`` (int).
+            When ``duplicate_samples`` is True, the strain context is tiled across a
+            batch dimension of size ``batch_size`` and an independent white-noise
+            realization is added to each copy, so the proposal marginalizes over noise
+            realizations. Must be set before super().__init__(), since that calls
+            _initialize_transforms().
         """
+        self.duplicate_samples = kwargs.pop("duplicate_samples", False)
+        self.batch_size = kwargs.pop("batch_size", None)
         super().__init__(**kwargs)
         self.t_ref = self.base_model_metadata["train_settings"]["data"]["ref_time"]
         self._pesummary_package = "gw"
@@ -178,25 +189,31 @@ class GWSampler(GWSamplerMixin, Sampler):
 
     def _initialize_transforms(self):
         # preprocessing transforms:
+        #   * (zero noise) tile the single event strain across a batch dimension
         #   * whiten and scale strain (since the inference network expects standardized
         #   data)
+        #   * (zero noise) add an independent white-noise realization to each copy
         #   * repackage strains and asds from dicts to an array
         #   * convert array to torch tensor on the correct device
         #   * extract only strain/waveform from the sample
-        self.transform_pre = Compose(
-            [
-                WhitenAndScaleStrain(self.domain.noise_std),
-                # Use base metadata so that unconditional samplers still know how to
-                # transform data, since this transform is used by the GNPE sampler as
-                # well.
-                RepackageStrainsAndASDS(
-                    self.base_model_metadata["train_settings"]["data"]["detectors"],
-                    first_index=self.domain.min_idx,
-                ),
-                ToTorch(device=self.model.device),
-                GetItem("waveform"),
-            ]
-        )
+        transform_pre = []
+        if self.duplicate_samples:
+            transform_pre.append(DuplicateSamples(batch_size=self.batch_size))
+        transform_pre.append(WhitenAndScaleStrain(self.domain.noise_std))
+        if self.duplicate_samples:
+            transform_pre.append(AddWhiteNoiseComplex())
+        transform_pre += [
+            # Use base metadata so that unconditional samplers still know how to
+            # transform data, since this transform is used by the GNPE sampler as
+            # well.
+            RepackageStrainsAndASDS(
+                self.base_model_metadata["train_settings"]["data"]["detectors"],
+                first_index=self.domain.min_idx,
+            ),
+            ToTorch(device=self.model.device),
+            GetItem("waveform"),
+        ]
+        self.transform_pre = Compose(transform_pre)
 
         # postprocessing transforms:
         #   * de-standardize data and extract inference parameters
