@@ -6,7 +6,7 @@ import time
 import numpy as np
 import astropy.units as u
 from typing import Dict, List, Tuple, Union, Callable
-from numbers import Number
+from numbers import Number, Real
 import warnings
 import pandas as pd
 
@@ -1706,6 +1706,8 @@ class LISAWaveformGenerator:
         transform=None,
         spin_conversion_phase=None,
         frozenLISA = False,
+        acc: float = 1e-4,
+        DeltalnMf_max: float = 0.025,
         **kwargs,
     ):
         """
@@ -1727,6 +1729,14 @@ class LISAWaveformGenerator:
         mode_list : List[Tuple]
             A list of waveform (ell, m) modes to include when generating
             the polarizations.
+        acc : float = 1e-4
+            Target inspiral phase interpolation error used by lisabeta's internal
+            frequency-grid builder. Must be finite and positive; this is not a
+            bound on waveform or SVD mismatch.
+        DeltalnMf_max : float = 0.025
+            Maximum logarithmic frequency step for lisabeta's internal grid.
+            Must be finite and positive. Smaller values request denser sampling
+            without changing the final DINGO domain.
         spin_conversion_phase : float = None
             Value for phiRef when computing cartesian spins from bilby spins via
             bilby_to_lalsimulation_spins. The common convention is to use the value of
@@ -1742,6 +1752,19 @@ class LISAWaveformGenerator:
             By setting spin_conversion_phase != None, we impose the convention to always
             use phase = spin_conversion_phase when computing the cartesian spins.
         """
+        for name, value in (("acc", acc), ("DeltalnMf_max", DeltalnMf_max)):
+            if (
+                isinstance(value, (bool, np.bool_))
+                or not isinstance(value, Real)
+                or not np.isfinite(value)
+                or value <= 0
+            ):
+                raise ValueError(
+                    f"{name} must be a finite positive real number, got {value!r}"
+                )
+        self.acc = float(acc)
+        self.DeltalnMf_max = float(DeltalnMf_max)
+
         if not isinstance(approximant, str):
             raise ValueError("approximant should be a string, but got", approximant)
         else:
@@ -1938,14 +1961,20 @@ class LISAWaveformGenerator:
             params = pytools.complete_mass_params(params)
         
         if isinstance(fLow, dict) and isinstance(fHigh, dict):
-            gridfreqClass = pytools.FrequencyGrid(fLow[(2,2)], fHigh[(2,2)], params["M"], params["q"], acc=acc, DeltalnMf_max=0.025)
+            gridfreqClass = pytools.FrequencyGrid(
+                fLow[(2, 2)], fHigh[(2, 2)], params["M"], params["q"],
+                acc=self.acc, DeltalnMf_max=self.DeltalnMf_max,
+            )
             gridfreq22 = gridfreqClass.get_freq()
             gridfreq = {}
-            for lm in modes:
+            for lm in fLow:
                 gridfreq[lm] = pytools.log_affine_scaling(gridfreq22, fLow[lm], fHigh[lm])
         else:
             # For PhenomHM will be rescaled by m/2 for different modes hlm
-            gridfreqClass = pytools.FrequencyGrid(fLow, fHigh, params["M"], params["q"], acc=1e-04, DeltalnMf_max=0.025)
+            gridfreqClass = pytools.FrequencyGrid(
+                fLow, fHigh, params["M"], params["q"],
+                acc=self.acc, DeltalnMf_max=self.DeltalnMf_max,
+            )
             gridfreq = gridfreqClass.get_freq()
 
         return gridfreq
