@@ -1,4 +1,5 @@
 import math
+import numbers
 import numpy as np
 import torch
 import pandas as pd
@@ -99,78 +100,99 @@ def time_delay_from_geocenter(
 
 
 
+def validate_response_thinning(response_thinning):
+    """Check lisa_settings["response_thinning"]: an integer >= 1 (1 = no thinning)."""
+    if (
+        isinstance(response_thinning, bool)
+        or not isinstance(response_thinning, numbers.Integral)
+        or response_thinning < 1
+    ):
+        raise ValueError(
+            "lisa_settings['response_thinning'] must be an integer >= 1, "
+            f"got {response_thinning!r}."
+        )
+    return int(response_thinning)
+
+
+def response_thinning_indices(n, k):
+    """Every k-th index of an n-point grid, always including the last point. Falls back
+    to the full grid if fewer than 4 points would remain (cubic spline minimum)."""
+    if k <= 1 or n <= 4:
+        return np.arange(n)
+    idx = np.arange(0, n, k)
+    if idx[-1] != n - 1:
+        idx = np.append(idx, n - 1)
+    return idx if len(idx) >= 4 else np.arange(n)
+
+
 def process_transfer(freq_grid,amp,phase,tf,t0,l,m,inc,phi,lambd, beta, psi,interp_freqs,f_min,detector_type,LISAconst, 
-                    responseapprox, frozenLISA,TDIrescaled):
+                    responseapprox, frozenLISA,TDIrescaled, response_thinning=1, compute_chan3=True):
                     """helper function for the ProjectontoSpaceDetector class.  The class is designed to work with a
                      multidimensional array that comes with batching, but the actual transfer function code only 
                      likes 1D arrays, so that part gets broken out here.  Currently needs f_min argument that should be addressed
                      elsewhere.
+
+                     response_thinning: compute the response, the amp*transfer splines and the phaseRdelay
+                     spline on every k-th point of this mode's grid (last point always kept). The mode's
+                     phase spline always uses its full grid. 1 (default) is the unthinned algorithm.
+                     compute_chan3: if False, chan3 is not computed and None is returned in its place.
                     """
-                    
-                    
+
+                    def spline_eval(x, y):
+                        spline = pyspline.CubicSpline(x, y).get_spline()
+                        return pyspline.spline_eval_vector(spline, interp_freqs, extrapol_zero=True)
+
+                    sel = response_thinning_indices(len(freq_grid), response_thinning)
+
                     #Class called for each waveform dependent on extrinsic parameters 
                     #Also where detector settings are added
-                    
-                    tdiClass = pyresponse.LISAFDresponseTDI3Chan(freq_grid, tf, 
-                                                         t0, l, m, inc, phi, lambd, beta, psi, 
-                                                         detector_type,LISAconst, responseapprox, frozenLISA, 
-                                                         TDIrescaled)
-                    
-                    #Get Transfer function that amp-phase waveform gets multiplied with
-                    phaseRdelay, transferL1, transferL2, transferL3 = tdiClass.get_response() 
-                    
-                    #calculate complex amplitudes and new phase
+                    if len(sel) == len(freq_grid):
+                        grid_resp = freq_grid
+                        amp_resp = amp
+                        tdiClass = pyresponse.LISAFDresponseTDI3Chan(freq_grid, tf, 
+                                                             t0, l, m, inc, phi, lambd, beta, psi, 
+                                                             detector_type,LISAconst, responseapprox, frozenLISA, 
+                                                             TDIrescaled)
+                        #Get Transfer function that amp-phase waveform gets multiplied with
+                        phaseRdelay, transferL1, transferL2, transferL3 = tdiClass.get_response() 
+                        #PhaseRDelay to account for detector length delays
+                        phase = spline_eval(freq_grid, phase + phaseRdelay)
+                    else:
+                        freq_grid = np.ascontiguousarray(freq_grid, dtype=np.float64)
+                        grid_resp = np.ascontiguousarray(freq_grid[sel])
+                        amp_resp = np.asarray(amp)[sel]
+                        tf_resp = np.ascontiguousarray(np.asarray(tf)[sel], dtype=np.float64)
+                        tdiClass = pyresponse.LISAFDresponseTDI3Chan(grid_resp, tf_resp, 
+                                                             t0, l, m, inc, phi, lambd, beta, psi, 
+                                                             detector_type,LISAconst, responseapprox, frozenLISA, 
+                                                             TDIrescaled)
+                        phaseRdelay, transferL1, transferL2, transferL3 = tdiClass.get_response() 
+                        #Phase on the mode's full grid; the smooth response delay on the thinned grid
+                        phase = (spline_eval(freq_grid, np.ascontiguousarray(phase, dtype=np.float64))
+                                 + spline_eval(grid_resp, np.ascontiguousarray(phaseRdelay, dtype=np.float64)))
 
-                    camp1 = amp * transferL1
-                    camp2 = amp * transferL2
-                    camp3 = amp * transferL3
-                    phasetot = phase + phaseRdelay #PhaseRDelay to account for detector length delays
-                    
-                    #Break each amplitude into real and complex for each channel and interpolate
-                    amp_real_chan1 = np.copy(np.real(camp1))
-                    amp_imag_chan1 = np.copy(np.imag(camp1))
-                    amp_real_chan2 = np.copy(np.real(camp2))
-                    amp_imag_chan2 = np.copy(np.imag(camp2))
-                    amp_real_chan3 = np.copy(np.real(camp3))
-                    amp_imag_chan3 = np.copy(np.imag(camp3))
-                    #Interpolation.  Need to initialize classes to do this currently.
-                    spline_amp_real_chan1Class = pyspline.CubicSpline(freq_grid, amp_real_chan1)
-                    spline_amp_imag_chan1Class = pyspline.CubicSpline(freq_grid, amp_imag_chan1)
-                    spline_amp_real_chan2Class = pyspline.CubicSpline(freq_grid, amp_real_chan2)
-                    spline_amp_imag_chan2Class = pyspline.CubicSpline(freq_grid, amp_imag_chan2)
-                    spline_amp_real_chan3Class = pyspline.CubicSpline(freq_grid, amp_real_chan3)
-                    spline_amp_imag_chan3Class = pyspline.CubicSpline(freq_grid, amp_imag_chan3)
-                    spline_phaseClass = pyspline.CubicSpline(freq_grid, phasetot)
-                    
-                    spline_amp_real_chan1 = spline_amp_real_chan1Class.get_spline()
-                    spline_amp_imag_chan1 = spline_amp_imag_chan1Class.get_spline()
-                    spline_amp_real_chan2 = spline_amp_real_chan2Class.get_spline()
-                    spline_amp_imag_chan2 = spline_amp_imag_chan2Class.get_spline()
-                    spline_amp_real_chan3 = spline_amp_real_chan3Class.get_spline()
-                    spline_amp_imag_chan3 = spline_amp_imag_chan3Class.get_spline()
-                    spline_phase = spline_phaseClass.get_spline()
-                    # Evaluate splines
-                    ampreal_chan1 = pyspline.spline_eval_vector(spline_amp_real_chan1, interp_freqs, extrapol_zero=True)
-                    ampimag_chan1 = pyspline.spline_eval_vector(spline_amp_imag_chan1, interp_freqs, extrapol_zero=True)
-                    ampreal_chan2 = pyspline.spline_eval_vector(spline_amp_real_chan2, interp_freqs, extrapol_zero=True)
-                    ampimag_chan2 = pyspline.spline_eval_vector(spline_amp_imag_chan2, interp_freqs, extrapol_zero=True)
-                    ampreal_chan3 = pyspline.spline_eval_vector(spline_amp_real_chan3, interp_freqs, extrapol_zero=True)
-                    ampimag_chan3 = pyspline.spline_eval_vector(spline_amp_imag_chan3, interp_freqs, extrapol_zero=True)
-                    phase = pyspline.spline_eval_vector(spline_phase, interp_freqs, extrapol_zero=True)
-                    # Get complex values for the TDI freqseries
                     eiphase = np.exp(1j*phase)
-                    tdi_chan1_vals = (ampreal_chan1 + 1j*ampimag_chan1) * eiphase
-                    tdi_chan2_vals = (ampreal_chan2 + 1j*ampimag_chan2) * eiphase
-                    tdi_chan3_vals = (ampreal_chan3 + 1j*ampimag_chan3) * eiphase
+                    below_f_min = interp_freqs < f_min
 
-                    #Set waveforms = 0 below fmin.  This should happen elsewhere
-                    tdi_chan1_vals[interp_freqs < f_min] = 0.
-                    tdi_chan2_vals[interp_freqs < f_min] = 0.
-                    tdi_chan3_vals[interp_freqs < f_min] = 0.
+                    #lisabeta always computes transferL3; only the chan3 splines are skipped here
+                    transfers = [transferL1, transferL2]
+                    if compute_chan3:
+                        transfers.append(transferL3)
 
-                   
+                    tdi_vals = []
+                    for transfer in transfers:
+                        #Complex amplitude, interpolated as real and imaginary parts
+                        camp = amp_resp * transfer
+                        ampreal = spline_eval(grid_resp, np.copy(np.real(camp)))
+                        ampimag = spline_eval(grid_resp, np.copy(np.imag(camp)))
+                        vals = (ampreal + 1j*ampimag) * eiphase
+                        #Set waveforms = 0 below fmin.  This should happen elsewhere
+                        vals[below_f_min] = 0.
+                        tdi_vals.append(vals)
+                    if not compute_chan3:
+                        tdi_vals.append(None)
 
-                    return tdi_chan1_vals, tdi_chan2_vals, tdi_chan3_vals
+                    return tuple(tdi_vals)
 
 
 class GetDetectorTimes(object):
@@ -475,6 +497,10 @@ class ProjectOntoSpaceDetectors(object):
     (2) Generate Transfer function for each detector using the extrinsic parameters
     (3) Project each mode onto the LISA detectors as T*A*np.exp(1j*phase)
     (4) Sum modes to get final waveform for each detector
+
+    Optional lisa_settings["response_thinning"] (int >= 1, default 1): compute the
+    response on every k-th point of each mode's grid (see process_transfer). chan3
+    is only computed when it is in channels.
     
     """
 
@@ -486,6 +512,9 @@ class ProjectOntoSpaceDetectors(object):
         self.responseapprox = lisa_settings["responseapprox"]
         self.frozenLISA = lisa_settings["frozenLISA"]
         self.TDIrescaled = lisa_settings["TDIrescaled"]
+        self.response_thinning = validate_response_thinning(
+            lisa_settings.get("response_thinning", 1)
+        )
         self.channels = channels
 
     @staticmethod
@@ -666,6 +695,8 @@ class ProjectOntoSpaceDetectors(object):
         # 4. compute mode strain as (Re(A) + i*im(A))*exp(i*phase)
         # 5. Add mode strain to total strain array to create a single waveform as sum of modes.
 
+        compute_chan3 = "chan3" in self.channels
+
         #Makes chan1,2,3 1D arrays if d_new is scalar.  Must be better way.
         if np.isscalar(d_new):
             chan1 = np.zeros(len(interp_freqs),dtype = np.complex128)
@@ -719,18 +750,20 @@ class ProjectOntoSpaceDetectors(object):
                 # original line that broke the wfd get_items: inc, phi, lambd, beta = [np.array(x).item() if np.size(x) == 1 else x for x in [inc, phi, lambd, beta]]
                 inc, phi, lambd, beta = [np.array(x) if np.size(x) == 1 else x for x in [inc, phi, lambd, beta]] #This line seems to fix the issue 
                 chan1_mode,chan2_mode,chan3_mode  = process_transfer(freq_grid,amp, phase,tf,t0,l,m,inc,phi,lambd, beta, psi,interp_freqs,self.domain.f_min,self.detector_type,self.LISAconst, 
-                    self.responseapprox, self.frozenLISA,self.TDIrescaled)
+                    self.responseapprox, self.frozenLISA,self.TDIrescaled,
+                    response_thinning=self.response_thinning, compute_chan3=compute_chan3)
                 
                 sample["waveform"][lm]["Chan1"] = chan1_mode
                 sample["waveform"][lm]["Chan2"] = chan2_mode
-                if "chan3" in self.channels:
+                if compute_chan3:
                     sample["waveform"][lm]["Chan3"] = chan3_mode
             else:
                 
             
                 #Calculate Transfer Functions using list comprehension
                 mode_strains = [process_transfer(freq_grid,amp, phase,tf,t0_,l,m,inc_,phi_,lambd_, beta_, psi_,interp_freqs,self.domain.f_min,self.detector_type,self.LISAconst,
-                        self.responseapprox, self.frozenLISA,self.TDIrescaled) for freq_grid,amp,phase, tf, inc_,phi_,lambd_, beta_, psi_, t0_ in zip(sample["waveform"][lm]["freq"],sample["waveform"][lm]["amp"],sample["waveform"][lm]["phase"],sample["waveform"][lm]["tf"],inc,phi,lambd,beta,psi,np.atleast_1d(t0))]
+                        self.responseapprox, self.frozenLISA,self.TDIrescaled,
+                        response_thinning=self.response_thinning, compute_chan3=compute_chan3) for freq_grid,amp,phase, tf, inc_,phi_,lambd_, beta_, psi_, t0_ in zip(sample["waveform"][lm]["freq"],sample["waveform"][lm]["amp"],sample["waveform"][lm]["phase"],sample["waveform"][lm]["tf"],inc,phi,lambd,beta,psi,np.atleast_1d(t0))]
 
                 #Probably dont need this but useful for checking
                 chan1_mode = np.stack([i[0] for i in mode_strains], axis=0)

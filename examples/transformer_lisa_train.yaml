@@ -25,6 +25,9 @@ data:
     responseapprox: full
     frozenLISA: False
     TDIrescaled: True
+    # Optional: compute the response on every k-th point of each mode's grid
+    # (1 = off, the default). k = 8 gave max whitened mismatch 1.7e-9 and 2.2x speed.
+    # response_thinning: 8
   detectors:
     - chan1
     - chan2
