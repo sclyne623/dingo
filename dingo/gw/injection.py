@@ -12,6 +12,7 @@ from dingo.gw.domains import (
 from dingo.gw.domains import build_domain, build_domain_from_model_metadata
 from dingo.gw.gwutils import get_extrinsic_prior_dict
 from dingo.gw.prior import build_prior_with_defaults, split_off_extrinsic_parameters
+from dingo.gw.lisa_time import strip_time_shift_for_generator
 from dingo.gw.transforms import (
     GetDetectorTimes,
     ProjectOntoDetectors,
@@ -230,7 +231,11 @@ class GWSignal(object):
             theta_intrinsic = pytools.complete_spin_params(theta_intrinsic)
             
             
-            polarizations = self.waveform_generator.generate_amp_phase({**theta_extrinsic,**theta_intrinsic})
+            # The time shift is applied in ProjectOntoSpaceDetectors, so the modes
+            # are generated with Deltat = 0.
+            polarizations = self.waveform_generator.generate_amp_phase(
+                strip_time_shift_for_generator({**theta_extrinsic, **theta_intrinsic})
+            )
         elif isinstance(self.waveform_generator, BBHxWaveformGenerator):
             # Generate intrinsic modes and apply detector response in transforms.
             polarizations = self.waveform_generator.generate_amp_phase_m(
@@ -298,7 +303,9 @@ class GWSignal(object):
             theta_intrinsic = pytools.complete_spin_params(theta_intrinsic)
             
             
-            pol_lm = self.waveform_generator.generate_amp_phase({**theta_extrinsic,**theta_intrinsic})
+            pol_lm = self.waveform_generator.generate_amp_phase(
+                strip_time_shift_for_generator({**theta_extrinsic, **theta_intrinsic})
+            )
         elif isinstance(self.waveform_generator, BBHxWaveformGenerator):
             pol_lm = self.waveform_generator.generate_amp_phase_m(
                 {**theta_extrinsic, **theta_intrinsic}

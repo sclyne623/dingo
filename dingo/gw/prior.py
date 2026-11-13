@@ -189,7 +189,9 @@ def split_off_extrinsic_parameters(theta):
     theta_extrinsic: dict
         BBH extrinsic parameters.
     """
-    extrinsic_parameters = ["geocent_time", "luminosity_distance", "ra", "dec", "psi","dist","beta","lambda","inc"]
+    # Deltat / DeltatL (LISA coalescence-time offsets) are applied by the LISA
+    # detector projection, not by the waveform generator; see dingo.gw.lisa_time.
+    extrinsic_parameters = ["geocent_time", "luminosity_distance", "ra", "dec", "psi","dist","beta","lambda","inc","Deltat","DeltatL"]
     theta_intrinsic = {}
     theta_extrinsic = {}
     for k, v in theta.items():

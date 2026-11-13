@@ -15,6 +15,8 @@ import lisabeta.tools.pyspline as pyspline
 import lisabeta.pyconstants as pyconstants
 import ast
 
+from dingo.gw.lisa_time import TIME_SHIFT_KEYS, pop_time_shift, time_shift_factor
+
 import os
 
 
@@ -98,6 +100,11 @@ def time_delay_from_geocenter(
             + (detector_2[2] - detector_1[2]) * costheta
         ) / CC
 
+
+
+def _is_zero_value(x):
+    """True for None or an all-zero scalar/array (a fiducial Deltat)."""
+    return x is None or np.all(np.asarray(x, dtype=np.float64) == 0.0)
 
 
 def validate_response_thinning(response_thinning):
@@ -366,6 +373,12 @@ class GenerateBBHxDirectResponse(object):
         sample = input_sample.copy()
         parameters = sample["parameters"].copy()
         extrinsic_parameters = sample["extrinsic_parameters"].copy()
+        if any(np.any(np.asarray(extrinsic_parameters.get(k, 0.0)) != 0.0)
+               for k in TIME_SHIFT_KEYS):
+            raise NotImplementedError(
+                "Deltat/DeltatL time shifts are only implemented for the lisabeta "
+                "response (ProjectOntoSpaceDetectors), not BBHx direct response."
+            )
         if self.timing_profile:
             self._record_timing("copy_inputs", time.perf_counter() - t0)
 
@@ -547,6 +560,14 @@ class ProjectOntoSpaceDetectors(object):
         if is_bbhx_waveform:
             parameters = sample["parameters"].copy()
             extrinsic_parameters = sample["extrinsic_parameters"].copy()
+            if any(np.any(np.asarray(extrinsic_parameters.get(k, 0.0)) != 0.0)
+                   for k in TIME_SHIFT_KEYS):
+                raise NotImplementedError(
+                    "Deltat/DeltatL time shifts are not implemented for BBHx "
+                    "waveforms; use the lisabeta response."
+                )
+            for k in TIME_SHIFT_KEYS:
+                extrinsic_parameters.pop(k, None)
 
             # Support both lisabeta-style and bilby-style distance names.
             d_ref = self._get_first(parameters, ["dist", "luminosity_distance"], 1.0)
@@ -660,9 +681,28 @@ class ProjectOntoSpaceDetectors(object):
                 "Missing parameters for LISA response projection. "
                 "Expected distance, sky location, polarization, and inclination."
             )
-        
-        # Convert geocent_time (seconds) to years for LISA orbital position
-        t0 = tc_new / pyconstants.YRSID_SI
+
+        # Optional coalescence-time offset (see dingo.gw.lisa_time). geocent_time
+        # stays the fixed orbital reference t0_s; Deltat (SSB) or DeltatL (LISA
+        # frame) moves the signal relative to it.
+        time_shift, time_shift_L = pop_time_shift(
+            extrinsic_parameters, lambd, beta, tc_new, frozen_lisa=self.frozenLISA
+        )
+        if time_shift is not None and not _is_zero_value(parameters.get("Deltat")):
+            raise ValueError(
+                "The waveform modes were generated with a nonzero Deltat and an "
+                "extrinsic Deltat/DeltatL was also given; the shift would be applied "
+                "twice. Generate the modes with Deltat = 0."
+            )
+
+        # Convert geocent_time (seconds) to years for LISA orbital position. With a
+        # time shift, the response must see LISA where it is at merger, i.e. at
+        # t0_s + Deltat (lisabeta adds Deltat to t(f), and the response only depends
+        # on t(f) + t0_s). A frozen LISA stays at t0_s, as in lisabeta.
+        if time_shift is not None and not self.frozenLISA:
+            t0 = (tc_new + time_shift) / pyconstants.YRSID_SI
+        else:
+            t0 = tc_new / pyconstants.YRSID_SI
         
         
         # (1) rescale polarizations and set distance parameter to sampled value
@@ -760,10 +800,12 @@ class ProjectOntoSpaceDetectors(object):
             else:
                 
             
-                #Calculate Transfer Functions using list comprehension
+                #Calculate Transfer Functions using list comprehension.
+                #Broadcast t0 to the batch, so a scalar t0 does not truncate the zip to one sample.
+                t0_batch = np.broadcast_to(np.atleast_1d(t0), (len(np.atleast_1d(inc)),))
                 mode_strains = [process_transfer(freq_grid,amp, phase,tf,t0_,l,m,inc_,phi_,lambd_, beta_, psi_,interp_freqs,self.domain.f_min,self.detector_type,self.LISAconst,
                         self.responseapprox, self.frozenLISA,self.TDIrescaled,
-                        response_thinning=self.response_thinning, compute_chan3=compute_chan3) for freq_grid,amp,phase, tf, inc_,phi_,lambd_, beta_, psi_, t0_ in zip(sample["waveform"][lm]["freq"],sample["waveform"][lm]["amp"],sample["waveform"][lm]["phase"],sample["waveform"][lm]["tf"],inc,phi,lambd,beta,psi,np.atleast_1d(t0))]
+                        response_thinning=self.response_thinning, compute_chan3=compute_chan3) for freq_grid,amp,phase, tf, inc_,phi_,lambd_, beta_, psi_, t0_ in zip(sample["waveform"][lm]["freq"],sample["waveform"][lm]["amp"],sample["waveform"][lm]["phase"],sample["waveform"][lm]["tf"],inc,phi,lambd,beta,psi,t0_batch)]
 
                 #Probably dont need this but useful for checking
                 chan1_mode = np.stack([i[0] for i in mode_strains], axis=0)
@@ -795,6 +837,15 @@ class ProjectOntoSpaceDetectors(object):
         if "chan3" in self.channels:
             strains["chan3"] = chan3
 
+        # Coalescence-time shift, lisabeta convention exp(+2 pi i f Deltat). Applied
+        # after the mode sum: the factor is common to all modes and channels, and the
+        # spline of phase + 2 pi f Deltat equals the spline of phase plus the exact
+        # linear term, so this matches generating the modes with Deltat directly.
+        if time_shift is not None:
+            factor = time_shift_factor(interp_freqs, time_shift)
+            for k in strains:
+                strains[k] = strains[k] * factor
+
 
         
 
@@ -812,7 +863,10 @@ class ProjectOntoSpaceDetectors(object):
         parameters["ra"] = lambd
         parameters["dec"] = beta
         parameters["luminosity_distance"] = d_new
-     
+        if time_shift is not None:
+            parameters["Deltat"] = time_shift
+            parameters["DeltatL"] = time_shift_L
+
         sample["waveform"] = strains
         sample["parameters"] = parameters
         sample["extrinsic_parameters"] = extrinsic_parameters
