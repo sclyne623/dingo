@@ -334,6 +334,7 @@ def build_svd_for_embedding_network(
     batch_size: int = 1000,
     method: str = "svds",
     out_dir: Optional[str] = None,
+    generation_num_workers: Optional[int] = None,
 ) -> List:
     """
     Construct SVD matrices V based on clean waveforms in each interferometer. These
@@ -358,6 +359,11 @@ def build_svd_for_embedding_network(
         SVD backend passed to SVDBasis.generate_basis.
     out_dir : str
         SVD performance diagnostics are saved here.
+    generation_num_workers : int, optional
+        DataLoader workers used to generate the SVD training waveforms. None (default)
+        keeps the serial generation (num_workers=0). Workers are forked inside the
+        single-thread BLAS limit, so they do not oversubscribe; the SVD afterwards
+        uses the full BLAS thread pool of the process.
 
     Returns
     -------
@@ -411,7 +417,7 @@ def build_svd_for_embedding_network(
     loader = DataLoader(
         wfd,
         batch_size=batch_size,
-        num_workers=0,
+        num_workers=int(generation_num_workers or 0),
         worker_init_fn=fix_random_seeds,
     )
     with threadpool_limits(limits=1, user_api="blas"):
