@@ -50,6 +50,8 @@ def parse_args():
                     help="Waveforms per worker batch (memory per batch ~ batch x channels x bins x 16 B).")
     ap.add_argument("--method", default=None,
                     help="SVD backend (scipy, svds, random). Default: the YAML's svd.method, else scipy.")
+    ap.add_argument("--random_n_iter", type=int, default=None,
+                    help="Power iterations for --method random (default: the YAML's svd.random_n_iter, else 30).")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--force", action="store_true", help="Overwrite existing svd_*.hdf5 in train_dir.")
     return ap.parse_args()
@@ -80,6 +82,8 @@ def main():
     svd_kwargs.pop("generation_num_workers", None)
     method = args.method or svd_kwargs.pop("method", None) or "scipy"
     svd_kwargs.pop("method", None)
+    if args.random_n_iter is not None:
+        svd_kwargs["random_n_iter"] = args.random_n_iter
 
     os.makedirs(args.train_dir, exist_ok=True)
     out_files = [os.path.join(args.train_dir, f"svd_{ifo}.hdf5") for ifo in detectors]
@@ -89,7 +93,7 @@ def main():
 
     print("dingo:", dingo_commit())
     print("BLAS:", [(i.get("internal_api"), i.get("num_threads")) for i in threadpool_info()])
-    print(f"SVD: size={svd_kwargs.get('size')} method={method} "
+    print(f"SVD: size={svd_kwargs.get('size')} method={method} n_iter={svd_kwargs.get('random_n_iter')} "
           f"train={svd_kwargs.get('num_training_samples')} val={svd_kwargs.get('num_validation_samples')} "
           f"workers={args.num_workers} batch={args.batch_size}", flush=True)
 

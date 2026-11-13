@@ -8,6 +8,35 @@ import math
 from scipy.sparse.linalg import svds
 
 
+def projection_mismatches(data, V, Vh, truncations, chunk_size=1000):
+    """Mismatch between each row of data and its projection onto the first n basis
+    vectors, for each n in truncations.
+
+    Same formula as the original per-waveform loop (compress with V[:, :n],
+    reconstruct with Vh[:n], 1 - Re<d, r> / (|d| |r|)), but evaluated in row chunks
+    with matrix-matrix products, so it runs on the multithreaded BLAS instead of one
+    memory-bound matrix-vector product per waveform and truncation.
+
+    Returns an array of shape (len(truncations), len(data)).
+    """
+    data = np.asarray(data)
+    truncations = [int(n) for n in truncations]
+    n_max = max(truncations)
+    out = np.empty((len(truncations), len(data)))
+    for start in range(0, len(data), chunk_size):
+        d = data[start : start + chunk_size]
+        norm1 = np.sqrt(np.sum(np.abs(d) ** 2, axis=1))
+        d_conj = d.conj()
+        # Columns of a matrix product are independent, so (d @ V)[:, :n] is d @ V[:, :n].
+        compressed = d @ V[:, :n_max]
+        for j, n in enumerate(truncations):
+            reconstructed = compressed[:, :n] @ Vh[:n]
+            norm2 = np.sqrt(np.sum(np.abs(reconstructed) ** 2, axis=1))
+            inner = np.sum(d_conj * reconstructed, axis=1).real
+            out[j, start : start + len(d)] = 1 - inner / (norm1 * norm2)
+    return out
+
+
 class SVDBasis(DingoDataset):
 
     dataset_type = "svd_basis"
@@ -28,7 +57,9 @@ class SVDBasis(DingoDataset):
             data_keys=["V", "s", "mismatches"],
         )
 
-    def generate_basis(self, training_data: np.ndarray, n: int, method: str = "random"):
+    def generate_basis(
+        self, training_data: np.ndarray, n: int, method: str = "random", n_iter: int = 30
+    ):
         """Generate the SVD basis from training data and store it.
 
         The SVD decomposition takes
@@ -46,12 +77,17 @@ class SVDBasis(DingoDataset):
             n=0 keeps all basis elements.
         method: str
             Select SVD method, e.g. 'random', 'svds', or 'scipy'.
+        n_iter: int
+            Power iterations for method='random' (ignored otherwise). Each one costs
+            two passes over training_data; 30 is the historical default.
         """
         if method == "random":
             if n == 0:
                 n = min(training_data.shape)
 
-            U, s, Vh = randomized_svd(training_data, n, n_oversamples=15,n_iter=30, random_state=0)
+            U, s, Vh = randomized_svd(
+                training_data, n, n_oversamples=15, n_iter=n_iter, random_state=0
+            )
 
             self.Vh = Vh.astype(np.complex128)  # TODO: fix types
             self.V = self.Vh.T.conj()
@@ -207,16 +243,10 @@ class SVDBasis(DingoDataset):
         else:
             self.mismatches = pd.DataFrame()
 
-        for n in np.append(np.arange(increment, self.n, increment), self.n):
-            mismatches = np.empty(len(data))
-            for i, d in enumerate(data):
-                compressed = d @ self.V[:, :n]
-                reconstructed = compressed @ self.Vh[:n]
-                norm1 = np.sqrt(np.sum(np.abs(d) ** 2))
-                norm2 = np.sqrt(np.sum(np.abs(reconstructed) ** 2))
-                inner = np.sum(d.conj() * reconstructed).real
-                mismatches[i] = 1 - inner / (norm1 * norm2)
-            self.mismatches[f"mismatch n={n}"] = mismatches
+        truncations = np.append(np.arange(increment, self.n, increment), self.n)
+        mismatches = projection_mismatches(data, self.V, self.Vh, truncations)
+        for n, m in zip(truncations, mismatches):
+            self.mismatches[f"mismatch n={n}"] = m
 
         if verbose:
             self.print_validation_summary()

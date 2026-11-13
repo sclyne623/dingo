@@ -335,6 +335,7 @@ def build_svd_for_embedding_network(
     method: str = "svds",
     out_dir: Optional[str] = None,
     generation_num_workers: Optional[int] = None,
+    random_n_iter: Optional[int] = None,
 ) -> List:
     """
     Construct SVD matrices V based on clean waveforms in each interferometer. These
@@ -364,6 +365,8 @@ def build_svd_for_embedding_network(
         keeps the serial generation (num_workers=0). Workers are forked inside the
         single-thread BLAS limit, so they do not oversubscribe; the SVD afterwards
         uses the full BLAS thread pool of the process.
+    random_n_iter : int, optional
+        Power iterations for method='random'. None keeps SVDBasis's default (30).
 
     Returns
     -------
@@ -444,10 +447,14 @@ def build_svd_for_embedding_network(
     print("Generating SVD basis for ifo:")
     time_start = time.time()
     basis_dict = {}
-    print(f"...using SVD method: {method}")
+    print(f"...using SVD method: {method}"
+          + (f" (n_iter={random_n_iter})" if method == "random" and random_n_iter else ""))
     for ifo in ifos:
         basis = SVDBasis()
-        basis.generate_basis(waveforms[ifo][:num_training_samples], size, method)
+        basis_kwargs = {} if random_n_iter is None else {"n_iter": int(random_n_iter)}
+        basis.generate_basis(
+            waveforms[ifo][:num_training_samples], size, method, **basis_kwargs
+        )
         basis_dict[ifo] = basis
         print(f"...{ifo} done.")
     print(f"...this took {time.time() - time_start:.0f} s.")
