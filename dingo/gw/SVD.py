@@ -1,11 +1,37 @@
 import numpy as np
 import pandas as pd
 import scipy
-from sklearn.utils.extmath import randomized_svd
+import scipy.linalg
 from dingo.core.dataset import DingoDataset
 import cupy as cp
 import math
 from scipy.sparse.linalg import svds
+
+
+def randomized_svd_complex(X, k, n_oversamples=15, n_iter=7, seed=0):
+    """Top-k singular values and right singular vectors of X (real or complex) by
+    randomized subspace iteration (Halko, Martinsson & Tropp 2011, Alg. 4.4), with
+    conjugate transposes throughout and QR re-orthonormalization at every step.
+
+    Returns s (k,) in descending order and Vh (k, X.shape[1]). X is never copied:
+    X^H Q is formed as (Q^H X)^H.
+    """
+    rng = np.random.default_rng(seed)
+    m, N = X.shape
+    size = min(k + n_oversamples, m, N)
+    omega = rng.standard_normal((N, size))
+    if np.iscomplexobj(X):
+        omega = omega + 1j * rng.standard_normal((N, size))
+    omega = omega.astype(X.dtype, copy=False)
+    Q, _ = scipy.linalg.qr(X @ omega, mode="economic", check_finite=False)
+    for _ in range(n_iter):
+        Z, _ = scipy.linalg.qr(
+            (Q.conj().T @ X).conj().T, mode="economic", check_finite=False
+        )
+        Q, _ = scipy.linalg.qr(X @ Z, mode="economic", check_finite=False)
+    B = Q.conj().T @ X  # (size, N); X ~ Q B
+    _, s, Vh = scipy.linalg.svd(B, full_matrices=False, check_finite=False)
+    return s[:k], Vh[:k]
 
 
 def projection_mismatches(data, V, Vh, truncations, chunk_size=1000):
@@ -85,8 +111,10 @@ class SVDBasis(DingoDataset):
             if n == 0:
                 n = min(training_data.shape)
 
-            U, s, Vh = randomized_svd(
-                training_data, n, n_oversamples=15, n_iter=n_iter, random_state=0
+            # Not sklearn's randomized_svd: it projects with Q.T instead of Q^H, which
+            # is wrong for complex data (wrong singular values, partly wrong basis).
+            s, Vh = randomized_svd_complex(
+                training_data, n, n_oversamples=15, n_iter=n_iter, seed=0
             )
 
             self.Vh = Vh.astype(np.complex128)  # TODO: fix types
