@@ -831,6 +831,11 @@ def train_stages(
                 "gradient_updates_per_optimizer_step", 1
             ),
             automatic_mixed_precision=stage.get("automatic_mixed_precision", False),
+            # local_settings.yaml is re-read on resume, so clipping can be switched on
+            # for a run in progress; a stage-level setting is the fallback.
+            gradient_clipping=local_settings.get(
+                "gradient_clipping", stage.get("gradient_clipping")
+            ),
         )
         # if test_only, model should not be saved, and run is complete
         if local_settings.get("test_only", False):

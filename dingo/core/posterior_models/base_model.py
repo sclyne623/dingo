@@ -19,7 +19,7 @@ import time
 import numpy as np
 import dingo.core.utils.trainutils
 import json
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from typing import Optional
 from dingo.core.utils.backward_compatibility import update_model_config
 from dingo.core.utils.misc import get_version
@@ -391,6 +391,7 @@ class BasePosteriorModel(ABC):
         test_print_freq: int = 50,
         gradient_updates_per_optimizer_step: int = 1,
         automatic_mixed_precision: bool = False,
+        gradient_clipping=None,
     ):
         """
 
@@ -406,6 +407,9 @@ class BasePosteriorModel(ABC):
             if True, training is skipped
         early_stopping: EarlyStopping
             Optional EarlyStopping instance.
+        gradient_clipping: float or dict, optional
+            Settings for GradientClipper (see GradientClipper.from_settings). None
+            disables clipping.
 
         Returns
         -------
@@ -427,6 +431,9 @@ class BasePosteriorModel(ABC):
                 print(f"test loss: {test_loss:.3f}")
 
         else:
+            gradient_clipper = GradientClipper.from_settings(gradient_clipping)
+            if gradient_clipper is not None and is_primary:
+                print(f"Gradient clipping: {gradient_clipper}")
             while not runtime_limits.limits_exceeded(self.epoch):
                 self.epoch += 1
                 if train_sampler is not None:
@@ -443,7 +450,10 @@ class BasePosteriorModel(ABC):
                     print_freq=max(1, int(train_print_freq)) if is_primary else 0,
                     gradient_updates_per_optimizer_step=gradient_updates_per_optimizer_step,
                     automatic_mixed_precision=automatic_mixed_precision,
+                    gradient_clipper=gradient_clipper,
                 )
+                if gradient_clipper is not None and is_primary:
+                    print(gradient_clipper.epoch_summary())
                 if dist.is_available() and dist.is_initialized():
                     t = torch.tensor(train_loss, device=self.device, dtype=torch.float64)
                     dist.all_reduce(t, op=dist.ReduceOp.SUM)
@@ -534,14 +544,93 @@ class BasePosteriorModel(ABC):
                     print(f"Finished training epoch {self.epoch}.\n")
 
 
+class GradientClipper:
+    """Clip the total gradient norm before each optimizer step.
+
+    The threshold is the smaller of a fixed max_norm and adaptive_factor times the
+    median of the last `window` recorded norms (adaptive only after `warmup`
+    norms). Steps whose gradient norm is NaN/inf are skipped. Per-epoch norm
+    statistics are collected so the threshold can be checked against real values.
+
+    Recorded norms are min(norm, threshold), so a single spike cannot raise the
+    adaptive threshold. The history lives on the object, i.e. it restarts (with a
+    fresh warmup) when a run is resumed.
+    """
+
+    def __init__(self, max_norm=None, adaptive_factor=None, window=1000, warmup=100):
+        if max_norm is None and adaptive_factor is None:
+            raise ValueError("GradientClipper needs max_norm and/or adaptive_factor.")
+        self.max_norm = None if max_norm is None else float(max_norm)
+        self.adaptive_factor = None if adaptive_factor is None else float(adaptive_factor)
+        self.window = int(window)
+        self.warmup = int(warmup)
+        self.history = deque(maxlen=self.window)
+        self.reset_epoch_stats()
+
+    @classmethod
+    def from_settings(cls, settings):
+        """None/False -> no clipper; a number -> fixed max_norm; a dict -> kwargs."""
+        if settings is None or settings is False:
+            return None
+        if isinstance(settings, (int, float)) and not isinstance(settings, bool):
+            return cls(max_norm=settings)
+        if isinstance(settings, dict):
+            return cls(**settings)
+        raise ValueError(f"Invalid gradient_clipping settings: {settings!r}")
+
+    def __repr__(self):
+        return (
+            f"GradientClipper(max_norm={self.max_norm}, adaptive_factor="
+            f"{self.adaptive_factor}, window={self.window}, warmup={self.warmup})"
+        )
+
+    def reset_epoch_stats(self):
+        self.epoch_norms = []
+        self.n_clipped = 0
+        self.n_skipped = 0
+
+    def threshold(self):
+        thr = float("inf") if self.max_norm is None else self.max_norm
+        if self.adaptive_factor is not None and len(self.history) >= self.warmup:
+            thr = min(thr, self.adaptive_factor * float(np.median(self.history)))
+        return thr
+
+    def clip(self, parameters):
+        """Clip gradients in place. Returns False if the step should be skipped."""
+        thr = self.threshold()
+        total = float(torch.nn.utils.clip_grad_norm_(parameters, thr))
+        if not np.isfinite(total):
+            self.n_skipped += 1
+            return False
+        self.epoch_norms.append(total)
+        if total > thr:
+            self.n_clipped += 1
+        self.history.append(min(total, thr))
+        return True
+
+    def epoch_summary(self):
+        if not self.epoch_norms:
+            return f"Gradient norms: none recorded; skipped (non-finite) {self.n_skipped}."
+        n = np.asarray(self.epoch_norms)
+        p50, p99 = np.percentile(n, [50, 99])
+        return (
+            f"Gradient norms: median {p50:.3g}, p99 {p99:.3g}, max {n.max():.3g}; "
+            f"clipped {self.n_clipped}/{len(n)} steps, skipped (non-finite) "
+            f"{self.n_skipped}; current threshold {self.threshold():.3g}."
+        )
+
+
 def train_epoch(
     pm,
     dataloader,
     print_freq: int = 1,
     gradient_updates_per_optimizer_step: int = 1,
     automatic_mixed_precision: bool = False,
+    gradient_clipper=None,
 ):
     pm.network.train()
+    if gradient_clipper is not None:
+        gradient_clipper.reset_epoch_stats()
     loss_info = dingo.core.utils.trainutils.LossInfo(
         pm.epoch,
         len(dataloader.dataset),
@@ -625,7 +714,13 @@ def train_epoch(
             loss.backward()
             # optimizer step every N batches
             if (batch_idx + 1) % gradient_updates_per_optimizer_step == 0:
-                pm.optimizer.step()
+                if gradient_clipper is None or gradient_clipper.clip(
+                    pm.network.parameters()
+                ):
+                    pm.optimizer.step()
+                else:
+                    # Non-finite gradient norm: drop this update entirely.
+                    pm.optimizer.zero_grad(set_to_none=True)
         # update loss for history and logging
         loss_info.update(loss.detach().item(), len(data[0]))
         loss_info.print_info(batch_idx)
