@@ -299,88 +299,64 @@ class StationaryGaussianGWLikelihood(GWSignal, Likelihood):
 
         # Step 2: Precompute complex inner products (mu, mu) and (d, mu) for the
         # individual modes m.
+        #
+        # With whitened data, (a, b) = sum(a.conj() * b) over frequency bins and
+        # detectors. Shifting the phase by phi multiplies mode m by exp(-i m phi), so
+        #
+        #   rho2opt(phi) = sum_m (mu_m, mu_m)
+        #                  + sum_{m<n} Re[2 (mu_m, mu_n) exp(-i (n - m) phi)],
+        #   kappa2(phi)  = sum_m Re[(d, mu_m) exp(-i m phi)].
+        #
+        # All of these inner products are taken at once per detector: stack the modes
+        # into M (n_modes x n_freq), then G = M* M^T and K = M d*.
         min_idx = self.data_domain.min_idx
         m_vals = sorted(pol_m.keys())
+        mode_values = [list(pol_m[m].values()) for m in m_vals]
+        if mode_values[0][0].ndim != 1:
+            return self.log_likelihood_phase_grid_reference(theta, phases)
 
-        # rho2opt is defined as the inner product of the waveform mu with itself.
-        # Since we work with whitened data, the inner product simply reads
-        #
-        #   (mu, mu) = sum(mu.conj() * mu).real,
-        #
-        # where the sum extends over frequency bins and detectors. Applying phase
-        # transformations exp(-i * m * phi) to the individual modes will lead to
-        # cross terms (the ^-symbol indicates the phase shift by phi)
-        #
-        #   (mu^_m, mu^_n) = [(mu_m.conj() * mu_n) * exp(-i * (n - m) * phi)].real.
-        #
-        # Below we precompute the cross terms sum(mu_m.conj() * mu_n) and the constant
-        # contribution for m = n.
-        rho2opt_const = 0
-        rho2opt_crossterms = {}
-        for idx, m in enumerate(m_vals):
-            mu_m = pol_m[m]
-            # contribution to rho2opt_const
-            rho2opt_const += sum(
-                [inner_product(mu_ifo, mu_ifo, min_idx) for mu_ifo in mu_m.values()]
-            )
-            # cross terms
-            for n in m_vals[idx + 1 :]:
-                mu_n = pol_m[n]
-                # factor 2, since (m, n) and (n, m) cross terms contribute symmetrically
-                rho2opt_crossterms[(m, n)] = 2 * sum(
-                    [
-                        inner_product_complex(mu_m_ifo, mu_n_ifo, min_idx)
-                        for mu_m_ifo, mu_n_ifo in zip(mu_m.values(), mu_n.values())
-                    ]
-                )
-        # kappa2 is given by
-        #
-        #   (d, mu) = sum(d.conj() * mu).real.
-        #
-        # Applying phase transformations exp(-i * m * phi) to the individual modes
-        # thus corresponds to
-        #
-        #   (d, mu^_m) = [(d.conj() * mu_m) * exp(-i * m * phi)].real.
-        #
-        # Below we precompute (d.conj() * mu_m) for the different modes m.
-        kappa2_modes = {}
-        for m in m_vals:
-            mu_m = pol_m[m]
-            kappa2_modes[m] = sum(
-                [
-                    inner_product_complex(d_ifo, mu_ifo, min_idx)
-                    for d_ifo, mu_ifo in zip(d.values(), mu_m.values())
-                ]
-            )
+        n_modes = len(m_vals)
+        G = np.zeros((n_modes, n_modes), dtype=complex)
+        K = np.zeros(n_modes, dtype=complex)
+        for i_ifo, d_ifo in enumerate(d.values()):
+            M = np.stack([mv[i_ifo][min_idx:] for mv in mode_values])
+            G += M.conj() @ M.T
+            K += M @ d_ifo[min_idx:].conj()
 
-        # Vectorized computation over all phases
-        phases_array = np.asarray(phases)
-        
-        # Compute rho2opt for all phases at once
-        # Start with constant term
-        rho2opt = np.full(len(phases), rho2opt_const)
-        
-        # Add cross terms using vectorized operations
-        for (m, n), c in rho2opt_crossterms.items():
-            # Shape: (n_phases,)
-            rho2opt += (c * np.exp(-1j * (n - m) * phases_array)).real
-        
-        # Compute kappa2 for all phases at once
-        kappa2 = np.zeros(len(phases))
-        for m in m_vals:
-            # Shape: (n_phases,)
-            kappa2 += (kappa2_modes[m] * np.exp(-1j * m * phases_array)).real
-        
-        # Compute log likelihoods for all phases
-        log_likelihoods = self.log_Zn + kappa2 - 0.5 * rho2opt
+        # Step 3: Collect everything by harmonic j, so that
+        #
+        #   log L(phi) = log_Zn - rho2opt_const / 2 + Re[sum_j a_j exp(-i j phi)],
+        #
+        # and evaluate on the grid with one small matrix product. The phasors
+        # exp(-i j phi) are the same for every sample and are cached.
+        rho2opt_const = G.diagonal().real.sum()
+        coeffs = {}
+        for i, m in enumerate(m_vals):
+            coeffs[m] = coeffs.get(m, 0) + K[i]
+            for j in range(i + 1, n_modes):
+                h = m_vals[j] - m
+                # -1/2 * (2 * G[i, j]) from the cross term in rho2opt
+                coeffs[h] = coeffs.get(h, 0) - G[i, j]
+        harmonics = tuple(sorted(coeffs))
+        a = np.array([coeffs[h] for h in harmonics])
+        phasors = self._phase_harmonics(np.asarray(phases, dtype=float), harmonics)
 
-        # # Test that this works:
-        # idx = len(phases) // 3
-        # phase = phases[idx]
-        # log_likelihood_ref = self.log_likelihood({**theta, "phase": phase})
-        # print(log_likelihoods[idx] - log_likelihood_ref)
-
+        log_likelihoods = self.log_Zn - 0.5 * rho2opt_const + (a @ phasors).real
         return log_likelihoods
+
+    def _phase_harmonics(self, phases, harmonics):
+        """exp(-i j phi) for each harmonic j and phase phi, cached between calls."""
+        cache = getattr(self, "_phase_harmonics_cache", None)
+        if (
+            cache is None
+            or cache[1] != harmonics
+            or cache[0].shape != phases.shape
+            or not np.array_equal(cache[0], phases)
+        ):
+            phasors = np.exp(-1j * np.outer(harmonics, phases))
+            cache = (phases.copy(), harmonics, phasors)
+            self._phase_harmonics_cache = cache
+        return cache[2]
 
     def log_likelihood_phase_grid_chunk(self, theta_chunk, phases):
         """
